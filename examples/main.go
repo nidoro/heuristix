@@ -7,6 +7,11 @@ import (
     "github.com/davecgh/go-spew/spew"
     "fmt"
     "hx"
+    
+    "image/color"
+    "gonum.org/v1/plot"
+    "gonum.org/v1/plot/plotter"
+    "gonum.org/v1/plot/vg"
 )
 
 type Node struct {
@@ -264,15 +269,64 @@ func ImproveByTwoOpt(s *Solution) bool {
 }
 */
 
+func ImproveBy2Opt(s *Solution) bool {
+    // Before:
+    // -- a -- b -- ...> -- u -- v --
+    // After:
+    // -- a -- u -- <... -- b -- v --
+    
+    // i = [0, n-2]
+    
+    d := s.Data
+    
+    for _, route := range s.Routes {
+        for i := 0; i < len(route.Order)-2; i++ {
+            a := route.Order[i]
+            b := route.Order[i+1]
+            
+            for j := i+2; j < len(route.Order)-1; j++ {
+                u := route.Order[j]
+                v := route.Order[j+1]
+                
+                if a == u || a == v || b == u || b == v {
+                    continue
+                }
+                
+                abCost := d.Edges[a][b]
+                uvCost := d.Edges[u][v]
+                auCost := d.Edges[a][u]
+                bvCost := d.Edges[b][v]
+                
+                newCost := s.Cost - abCost - uvCost + auCost + bvCost
+                
+                if newCost < s.Cost {
+                    // invert order between b and u
+                    stretchNodes := j - i+1
+                    for k := 0; k < int(stretchNodes/2); k++ {
+                        orig := i+1+k
+                        dest := j-k
+                        Swap(&route.Order[orig], &route.Order[dest])
+                    }
+                    
+                    s.Cost = newCost
+                    return true
+                }
+            }
+        }
+    }
+    
+    return false
+}
+    
 func ImproveCallback(ils *hx.ILSAlg[Solution], s *Solution) {
-    fmt.Println(s.Cost)
+    fmt.Println(s.Cost, ils.CurrentStrategy)
 }
 
 func main() {
     rand.Seed(time.Now().UnixNano())
     
-    d := GenRandomData(10, 100, 100)
-    d.VehicleCap = 10
+    d := GenRandomData(20, 100, 100)
+    d.VehicleCap = 20
     
     s := GenRandomSolution(&d)
     
@@ -281,11 +335,47 @@ func main() {
     
     ils := hx.ILS[Solution]()
     ils.AddImproveStrategy(ImproveByReinserting)
+    ils.AddImproveStrategy(ImproveBy2Opt)
     ils.SetImproveCallback(ImproveCallback)
     ils.Improve(&s)
     
     spew.Dump(s.Routes)
     spew.Dump(s.Cost)
+    
+    scatterData := make(plotter.XYs, d.N+1)
+    
+    for i, node := range d.Nodes {
+        scatterData[i].X = node.X
+        scatterData[i].Y = node.Y
+    }
+    
+    plt := plot.New()
+    plt.X.Label.Text = "X"
+    plt.Y.Label.Text = "Y"
+    plt.Add(plotter.NewGrid())
+    
+    scatter, _ := plotter.NewScatter(scatterData)
+    scatter.GlyphStyle.Color = color.RGBA{R: 255, B: 128, A: 255}
+    scatter.GlyphStyle.Radius = vg.Points(3)
+    plt.Add(scatter)
+    
+    for _, route := range s.Routes {
+        for i := 0; i < len(route.Order)-1; i++ {
+            j := i+1
+            pair := make(plotter.XYs, 2)
+            pair[0].X = d.Nodes[route.Order[i]].X
+            pair[0].Y = d.Nodes[route.Order[i]].Y
+            pair[1].X = d.Nodes[route.Order[j]].X
+            pair[1].Y = d.Nodes[route.Order[j]].Y
+            line, _ := plotter.NewLine(pair)
+            line.LineStyle.Width = vg.Points(1)
+            line.LineStyle.Dashes = []vg.Length{vg.Points(5), vg.Points(5)}
+            line.LineStyle.Color = color.RGBA{B: 255, A: 255}
+            plt.Add(line)
+        }
+    }
+    
+    _ = plt.Save(200, 200, "scatter.png")
 }
 
 
