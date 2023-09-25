@@ -1,22 +1,53 @@
 package hx
 
+// AlgState struct and interface
+//--------------------------------
 type ImproveStrategy [T any] func (s *T) bool
-type ImproveCallbackFunc [T any] func (s *T)
+type ImproveCallbackFunc [T any] func (ils *ILSAlg [T], s *T)
 
-type ILSAlg [T any] struct {
+type AlgState [T any] struct {
     ImproveStrategies []ImproveStrategy [T]
     ImproveCallback ImproveCallbackFunc [T]
     
-    MaxNonImprovingIter int
     Iter int
     Improvements int
     CurrentStrategy int
 }
 
+type AlgStateInterface [T any] interface {
+    Improve(solution *T)
+    AddImproveStrategy(strategy ImproveStrategy [T])
+    SetImproveCallback(callback ImproveCallbackFunc [T])
+}
+
+func (alg *AlgState [T]) AddImproveStrategy(strategy ImproveStrategy [T]) {
+    alg.ImproveStrategies = append(alg.ImproveStrategies, strategy)
+}
+
+func (alg *AlgState [T]) SetImproveCallback(callback ImproveCallbackFunc[T]) {
+    alg.ImproveCallback = callback
+}
+
+// ILSAlg struct and interface
+//--------------------------------
+type ILSAlg [T any] struct {
+    AlgState[T]
+    MaxNonImprovingIter int
+}
+
+type ILSAlgInterface [T any] interface {
+    SetMaxNonImprovingIter(value int)
+}
+
+// Constructor
 func ILS [T any] () ILSAlg[T] {
     return ILSAlg[T] {
         MaxNonImprovingIter: 5,
     }
+}
+
+func (ils *ILSAlg [T]) SetMaxNonImprovingIter(value int) {
+    ils.MaxNonImprovingIter = value
 }
 
 func (ils *ILSAlg[T]) Improve(s *T) {
@@ -32,7 +63,7 @@ func (ils *ILSAlg[T]) Improve(s *T) {
             if strategy(s) {
                 improved = true
                 ils.Improvements += 1
-                ils.ImproveCallback(s)
+                ils.ImproveCallback(ils, s)
                 stg = 0
             } else {
                 stg += 1
@@ -47,16 +78,4 @@ func (ils *ILSAlg[T]) Improve(s *T) {
         
         ils.Iter += 1
     }
-}
-
-func (ils *ILSAlg [T]) SetMaxNonImprovingIter(value int) {
-    ils.MaxNonImprovingIter = value
-}
-
-func (ils *ILSAlg [T]) AddImproveStrategy(strategy func (s *T) bool) {
-    ils.ImproveStrategies = append(ils.ImproveStrategies, strategy)
-}
-
-func (ils *ILSAlg [T]) SetImproveCallback(callback func (s *T)) {
-    ils.ImproveCallback = callback
 }
