@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -7,7 +6,7 @@ import (
     "time"
     "github.com/davecgh/go-spew/spew"
     "fmt"
-    "heuristix/hx"
+    "hx"
 )
 
 type Node struct {

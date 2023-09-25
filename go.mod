@@ -1,4 +1,4 @@
-module heuristix
+module hx
 
 go 1.21.0
 
