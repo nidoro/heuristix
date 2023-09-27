@@ -4,7 +4,7 @@ import (
     "math"
     "math/rand"
     "time"
-    "github.com/davecgh/go-spew/spew"
+    //"github.com/davecgh/go-spew/spew"
     "fmt"
     "hx"
     
@@ -20,9 +20,19 @@ type Node struct {
     Demand int
 }
 
+type Nodes []Node
+
+func (nodes Nodes) Len() int {
+    return len(nodes)
+}
+
+func (nodes Nodes) XY(index int) (x float64, y float64) {
+    return nodes[index].X, nodes[index].Y
+}
+
 type Data struct {
     N          int
-    Nodes      [] Node
+    Nodes      Nodes
     Edges      [][] float64
     VehicleCap int
 }
@@ -36,7 +46,7 @@ type Route struct {
 type Solution struct {
     Data      *Data
     Routes    [] *Route
-    Cost      float64
+    Cost float64
     NodeRoute [] int
 }
 
@@ -50,6 +60,18 @@ func MakeRoute(n int) *Route {
 
 func Swap [T any] (a *T, b *T) {
     *a, *b = *b, *a
+}
+
+func Print(s Solution) {
+    fmt.Printf("Cost: %.4f\n", s.Cost)
+    
+    for r, route := range s.Routes {
+        fmt.Printf("Route %d: %d", r, route.Order[0])
+        for i := 1; i < len(route.Order); i++ {
+            fmt.Printf(" - %d", route.Order[i])
+        }
+        fmt.Println()
+    }
 }
 
 func GetRandomNumber(min float64, max float64) float64 {
@@ -161,7 +183,7 @@ func InsertNodeIntoRoute(route *Route, nd int, index int) {
     route.Order = newOrder
 }
 
-func ImproveByReinserting(s *Solution) bool {
+func ImproveByReinsertingEx(s *Solution, alg *hx.AlgState[Solution]) float64 {
     // -> a -> b -> c
     // -> u -> b -> v
     d := s.Data
@@ -197,6 +219,7 @@ func ImproveByReinserting(s *Solution) bool {
                     ubvCost := d.Edges[u][b] + d.Edges[b][v]
                     
                     newCost := s.Cost - abcCost - uvCost + acCost + ubvCost
+                    costDiff := newCost - s.Cost
                     
                     if newCost < s.Cost {
                         RemoveIndexFromRoute(route1, i)
@@ -211,65 +234,19 @@ func ImproveByReinserting(s *Solution) bool {
                             route2.Load += route2.Load + nodeB.Demand
                         }
                         s.Cost = newCost
-                        return true
+                        if (alg.Accept(s)) {
+                            return costDiff
+                        }
                     }
                 }
             }
         }
     }
     
-    return false
+    return 0.0
 }
 
-/*
-func ImproveByTwoOpt(s *Solution) bool {
-    // Before:
-    // -- a -- b -- ...> -- u -- v --
-    // After:
-    // -- a -- u -- <... -- b -- v --
-    
-    d := s.Data
-    
-    // i = [0, n-2]
-    for i := 0; i < d.N-2; i++ {
-        a := s.Order[i]
-        b := s.Order[i+1]
-        
-        for j := i+2; j < d.N; j++ {
-            u := s.Order[j]
-            v := s.Order[j+1]
-            
-            if a == u || a == v || b == u || b == v {
-                continue
-            }
-            
-            abCost := d.Edges[a][b]
-            uvCost := d.Edges[u][v]
-            auCost := d.Edges[a][u]
-            bvCost := d.Edges[b][v]
-            
-            newCost := s.Cost - abCost - uvCost + auCost + bvCost
-            
-            if newCost < s.Cost {
-                // invert order between b and u
-                stretchNodes := j - i+1
-                for k := 0; k < int(stretchNodes/2); k++ {
-                    orig := i+1+k
-                    dest := j-k
-                    Swap(&s.Order[orig], &s.Order[dest])
-                }
-                
-                s.Cost = newCost
-                return true
-            }
-        }
-    }
-    
-    return false
-}
-*/
-
-func ImproveBy2Opt(s *Solution) bool {
+func ImproveBy2Opt(s *Solution) float64 {
     // Before:
     // -- a -- b -- ...> -- u -- v --
     // After:
@@ -298,6 +275,7 @@ func ImproveBy2Opt(s *Solution) bool {
                 bvCost := d.Edges[b][v]
                 
                 newCost := s.Cost - abCost - uvCost + auCost + bvCost
+                costDiff := newCost - s.Cost
                 
                 if newCost < s.Cost {
                     // invert order between b and u
@@ -309,52 +287,175 @@ func ImproveBy2Opt(s *Solution) bool {
                     }
                     
                     s.Cost = newCost
-                    return true
+                    return costDiff
                 }
             }
         }
     }
     
-    return false
-}
-    
-func ImproveCallback(ils *hx.ILSAlg[Solution], s *Solution) {
-    fmt.Println(s.Cost, ils.CurrentStrategy)
+    return 0.0
 }
 
-func main() {
-    rand.Seed(time.Now().UnixNano())
+func ImproveBySwapingAdjacent(s *Solution) float64 {
+    // -> a -> b -> c -> d
+    // -> a -> c -> b -> d
+    data := s.Data
     
-    d := GenRandomData(20, 100, 100)
-    d.VehicleCap = 20
-    
-    s := GenRandomSolution(&d)
-    
-    spew.Dump(d)
-    spew.Dump(s.Routes)
-    
-    ils := hx.ILS[Solution]()
-    ils.AddImproveStrategy(ImproveByReinserting)
-    ils.AddImproveStrategy(ImproveBy2Opt)
-    ils.SetImproveCallback(ImproveCallback)
-    ils.Improve(&s)
-    
-    spew.Dump(s.Routes)
-    spew.Dump(s.Cost)
-    
-    scatterData := make(plotter.XYs, d.N+1)
-    
-    for i, node := range d.Nodes {
-        scatterData[i].X = node.X
-        scatterData[i].Y = node.Y
+    for r := 0; r < len(s.Routes); r++ {
+        route := s.Routes[r]
+        
+        for i := 1; i < len(route.Order)-2; i++ {
+            a := route.Order[i-1]
+            b := route.Order[i]
+            c := route.Order[i+1]
+            d := route.Order[i+2]
+            
+            abcdCost := data.Edges[a][b] + data.Edges[b][c] + data.Edges[c][d]
+            acbdCost := data.Edges[a][c] + data.Edges[c][b] + data.Edges[b][d]
+            
+            newCost := s.Cost - abcdCost + acbdCost
+            costDiff := newCost - s.Cost
+            
+            if newCost < s.Cost {
+                Swap(&route.Order[i], &route.Order[i+1])
+                s.Cost = newCost
+                return costDiff
+            }
+        }
     }
+    
+    return 0.0
+}
+
+func AlterBySwapingAdjacent(s *Solution) float64 {
+    // -> a -> b -> c -> d
+    // -> a -> c -> b -> d
+    data := s.Data
+    
+    r := GetRandomInt(0, len(s.Routes)-1)
+    route := s.Routes[r]
+    
+    i := GetRandomInt(1, len(route.Order)-3)
+    a := route.Order[i-1]
+    b := route.Order[i]
+    c := route.Order[i+1]
+    d := route.Order[i+2]
+    
+    abcdCost := data.Edges[a][b] + data.Edges[b][c] + data.Edges[c][d]
+    acbdCost := data.Edges[a][c] + data.Edges[c][b] + data.Edges[b][d]
+    
+    newCost := s.Cost - abcdCost + acbdCost
+    costDiff := newCost - s.Cost
+    
+    Swap(&route.Order[i], &route.Order[i+1])
+    s.Cost = newCost
+    
+    return costDiff
+}
+
+func Copy(s Solution) Solution {
+    var result Solution
+    result.Data = s.Data
+    result.Cost = s.Cost
+    copy(result.NodeRoute, s.NodeRoute)
+    result.Routes = make([]*Route, len(s.Routes))
+    for i, route := range s.Routes {
+        result.Routes[i] = MakeRoute(s.Data.N)
+        result.Routes[i].Order = make([] int, len(route.Order))
+        result.Routes[i].Id = route.Id
+        copy(result.Routes[i].Order, route.Order)
+        result.Routes[i].Load = route.Load
+    }
+    
+    return result
+}
+
+func (s Solution) Copy() Solution {
+    var result Solution
+    result.Data = s.Data
+    result.Cost = s.Cost
+    copy(result.NodeRoute, s.NodeRoute)
+    result.Routes = make([]*Route, len(s.Routes))
+    for i, route := range s.Routes {
+        result.Routes[i] = MakeRoute(s.Data.N)
+        result.Routes[i].Order = make([] int, len(route.Order))
+        result.Routes[i].Id = route.Id
+        copy(result.Routes[i].Order, route.Order)
+        result.Routes[i].Load = route.Load
+    }
+    
+    return result
+}
+
+func AlterByReinserting(s *Solution) float64 {
+    d := s.Data
+    
+    for {
+        r1 := GetRandomInt(0, len(s.Routes)-1)
+        r2 := GetRandomInt(0, len(s.Routes)-1)
+        
+        route1 := s.Routes[r1]
+        route2 := s.Routes[r2]
+        
+        i := GetRandomInt(1, len(route1.Order)-2)
+        j := GetRandomInt(1, len(route2.Order)-2)
+        
+        a := route1.Order[i-1]
+        b := route1.Order[i]
+        c := route1.Order[i+1]
+        
+        nodeB := d.Nodes[b]
+        
+        u := route2.Order[j]
+        v := route2.Order[j+1]
+        
+        if b == u || a == u {
+            continue
+        }
+        
+        if r1 != r2 && route2.Load + nodeB.Demand > d.VehicleCap {
+            continue
+        }
+        
+        abcCost := d.Edges[a][b] + d.Edges[b][c]
+        acCost  := d.Edges[a][c]
+        uvCost  := d.Edges[u][v]
+        ubvCost := d.Edges[u][b] + d.Edges[b][v]
+        
+        newCost := s.Cost - abcCost - uvCost + acCost + ubvCost
+        
+        diff := newCost - s.Cost
+        
+        RemoveIndexFromRoute(route1, i)
+        k := 0
+        if i < j && route1 == route2 {
+            k = j
+        } else {
+            k = j+1
+        }
+        InsertNodeIntoRoute(route2, b, k)
+        if (r1 != r2) {
+            route2.Load += route2.Load + nodeB.Demand
+        }
+        s.Cost = newCost
+        
+        return diff
+    }
+}
+
+func ImproveCallback(s *Solution, alg hx.AlgState[Solution]) {
+    fmt.Printf("INFO | Improved %-4d | Cost: %-14.4f | CurrentStrategy: %d\n", alg.Improvements, s.Cost, alg.CurrentStrategy)
+}
+
+func PlotSolution(s Solution, filePath string) {
+    d := s.Data
     
     plt := plot.New()
     plt.X.Label.Text = "X"
     plt.Y.Label.Text = "Y"
     plt.Add(plotter.NewGrid())
     
-    scatter, _ := plotter.NewScatter(scatterData)
+    scatter, _ := plotter.NewScatter(d.Nodes)
     scatter.GlyphStyle.Color = color.RGBA{R: 255, B: 128, A: 255}
     scatter.GlyphStyle.Radius = vg.Points(3)
     plt.Add(scatter)
@@ -362,20 +463,75 @@ func main() {
     for _, route := range s.Routes {
         for i := 0; i < len(route.Order)-1; i++ {
             j := i+1
-            pair := make(plotter.XYs, 2)
-            pair[0].X = d.Nodes[route.Order[i]].X
-            pair[0].Y = d.Nodes[route.Order[i]].Y
-            pair[1].X = d.Nodes[route.Order[j]].X
-            pair[1].Y = d.Nodes[route.Order[j]].Y
-            line, _ := plotter.NewLine(pair)
+            coords := make(plotter.XYs, 2)
+            coords[0].X = d.Nodes[route.Order[i]].X
+            coords[0].Y = d.Nodes[route.Order[i]].Y
+            coords[1].X = d.Nodes[route.Order[j]].X
+            coords[1].Y = d.Nodes[route.Order[j]].Y
+            line, _ := plotter.NewLine(coords)
             line.LineStyle.Width = vg.Points(1)
-            line.LineStyle.Dashes = []vg.Length{vg.Points(5), vg.Points(5)}
             line.LineStyle.Color = color.RGBA{B: 255, A: 255}
             plt.Add(line)
         }
     }
     
-    _ = plt.Save(200, 200, "scatter.png")
+    _ = plt.Save(400, 400, filePath)
+}
+
+func (s Solution) GetCost() float64 {
+    return s.Cost
+}
+
+func main() {
+    rand.Seed(time.Now().UnixNano())
+    
+    d := GenRandomData(40, 100, 100)
+    d.VehicleCap = 40
+    
+    s0 := GenRandomSolution(&d)
+    s := Copy(s0)
+    
+    vnd := hx.VND[Solution]()
+    vnd.AddImprovingStrategy(ImproveBySwapingAdjacent)
+    vnd.AddImprovingStrategyEx(ImproveByReinsertingEx)
+    vnd.AddImprovingStrategy(ImproveBy2Opt)
+    vnd.SetImproveCallback(ImproveCallback)
+    vnd.Improve(&s)
+    
+    fmt.Println("VND Solution:")
+    Print(s)
+    PlotSolution(s, "s1.svg")
+    
+    s = Copy(s0)
+    
+    sa := hx.SA[Solution]()
+    sa.IterationsEachTemperature = 100
+    sa.InitialTemperature = 100
+    sa.CoolingRate = 0.999
+    sa.SetImproveCallback(ImproveCallback)
+    sa.AddImprovingStrategy(ImproveBy2Opt)
+    sa.AddAlteringStrategy(AlterByReinserting)
+    sa.Improve(&s)
+    
+    fmt.Println("SA Solution:")
+    Print(s)
+    PlotSolution(s, "s2.svg")
+    
+    s = Copy(s0)
+    
+    ils := hx.ILS[Solution]()
+    ils.MaxNonImprovingIter = 20
+    ils.SetImproveCallback(ImproveCallback)
+    ils.AddImprovingStrategy(ImproveBySwapingAdjacent)
+    ils.AddImprovingStrategyEx(ImproveByReinsertingEx)
+    ils.AddImprovingStrategy(ImproveBy2Opt)
+    ils.AddAlteringStrategy(AlterBySwapingAdjacent)
+    ils.AddAlteringStrategy(AlterByReinserting)
+    ils.Improve(&s)
+    
+    fmt.Println("ILS Solution:")
+    Print(s)
+    PlotSolution(s, "s3.svg")
 }
 
 
