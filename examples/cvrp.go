@@ -183,7 +183,7 @@ func InsertNodeIntoRoute(route *Route, nd int, index int) {
     route.Order = newOrder
 }
 
-func ImproveByReinsertingEx(s *Solution, alg *hx.AlgState[Solution]) float64 {
+func ImproveByReinsertingEx(s *Solution, heu hx.Heuristic[Solution]) float64 {
     // -> a -> b -> c
     // -> u -> b -> v
     d := s.Data
@@ -221,7 +221,12 @@ func ImproveByReinsertingEx(s *Solution, alg *hx.AlgState[Solution]) float64 {
                     newCost := s.Cost - abcCost - uvCost + acCost + ubvCost
                     costDiff := newCost - s.Cost
                     
-                    if newCost < s.Cost {
+                    ok, sl := heu.AcceptCost(s, newCost)
+                    
+                    if (ok) {
+                        route1 := sl.Routes[r1]
+                        route2 := sl.Routes[r2]
+                        
                         RemoveIndexFromRoute(route1, i)
                         k := 0
                         if i < j && route1 == route2 {
@@ -233,8 +238,9 @@ func ImproveByReinsertingEx(s *Solution, alg *hx.AlgState[Solution]) float64 {
                         if (r1 != r2) {
                             route2.Load += route2.Load + nodeB.Demand
                         }
-                        s.Cost = newCost
-                        if (alg.Accept(s)) {
+                        sl.Cost = newCost
+                        if (heu.Accept(&sl, newCost)) {
+                            *s = sl
                             return costDiff
                         }
                     }
@@ -246,7 +252,7 @@ func ImproveByReinsertingEx(s *Solution, alg *hx.AlgState[Solution]) float64 {
     return 0.0
 }
 
-func ImproveBy2Opt(s *Solution) float64 {
+func ImproveBy2OptEx(s *Solution, heu hx.Heuristic[Solution]) float64 {
     // Before:
     // -- a -- b -- ...> -- u -- v --
     // After:
@@ -256,7 +262,7 @@ func ImproveBy2Opt(s *Solution) float64 {
     
     d := s.Data
     
-    for _, route := range s.Routes {
+    for r, route := range s.Routes {
         for i := 0; i < len(route.Order)-2; i++ {
             a := route.Order[i]
             b := route.Order[i+1]
@@ -277,7 +283,11 @@ func ImproveBy2Opt(s *Solution) float64 {
                 newCost := s.Cost - abCost - uvCost + auCost + bvCost
                 costDiff := newCost - s.Cost
                 
-                if newCost < s.Cost {
+                ok, sl := heu.AcceptCost(s, newCost)
+                
+                if ok {
+                    route := sl.Routes[r]
+                    
                     // invert order between b and u
                     stretchNodes := j - i+1
                     for k := 0; k < int(stretchNodes/2); k++ {
@@ -286,8 +296,11 @@ func ImproveBy2Opt(s *Solution) float64 {
                         Swap(&route.Order[orig], &route.Order[dest])
                     }
                     
-                    s.Cost = newCost
-                    return costDiff
+                    sl.Cost = newCost
+                    if heu.Accept(&sl, newCost) {
+                        *s = sl
+                        return costDiff
+                    }
                 }
             }
         }
@@ -353,23 +366,6 @@ func AlterBySwapingAdjacent(s *Solution) float64 {
     return costDiff
 }
 
-func Copy(s Solution) Solution {
-    var result Solution
-    result.Data = s.Data
-    result.Cost = s.Cost
-    copy(result.NodeRoute, s.NodeRoute)
-    result.Routes = make([]*Route, len(s.Routes))
-    for i, route := range s.Routes {
-        result.Routes[i] = MakeRoute(s.Data.N)
-        result.Routes[i].Order = make([] int, len(route.Order))
-        result.Routes[i].Id = route.Id
-        copy(result.Routes[i].Order, route.Order)
-        result.Routes[i].Load = route.Load
-    }
-    
-    return result
-}
-
 func (s Solution) Copy() Solution {
     var result Solution
     result.Data = s.Data
@@ -379,8 +375,8 @@ func (s Solution) Copy() Solution {
     for i, route := range s.Routes {
         result.Routes[i] = MakeRoute(s.Data.N)
         result.Routes[i].Order = make([] int, len(route.Order))
-        result.Routes[i].Id = route.Id
         copy(result.Routes[i].Order, route.Order)
+        result.Routes[i].Id = route.Id
         result.Routes[i].Load = route.Load
     }
     
@@ -443,8 +439,9 @@ func AlterByReinserting(s *Solution) float64 {
     }
 }
 
-func ImproveCallback(s *Solution, alg hx.AlgState[Solution]) {
-    fmt.Printf("INFO | Improved %-4d | Cost: %-14.4f | CurrentStrategy: %d\n", alg.Improvements, s.Cost, alg.CurrentStrategy)
+func ImproveCallback(s *Solution, heu hx.Heuristic[Solution]) {
+    fmt.Printf("INFO | Improved %-4d | Cost: %-14.4f | CurrentStrategy: %d\n", heu.GetImprovementsCount(), s.Cost, heu.GetCurrentStrategy())
+    //Print(*s)
 }
 
 func PlotSolution(s Solution, filePath string) {
@@ -482,6 +479,23 @@ func (s Solution) GetCost() float64 {
     return s.Cost
 }
 
+func (s1 Solution) Compare(s2 Solution) bool {
+    if len(s1.Routes) == len(s2.Routes) && s1.Cost == s2.Cost {
+        for r, _ := range s1.Routes {
+            if len(s1.Routes[r].Order) == len(s2.Routes[r].Order) && s1.Routes[r].Load == s2.Routes[r].Load {
+                for i, _ := range s1.Routes {
+                    if (s1.Routes[r].Order[i] != s2.Routes[r].Order[i]) {
+                        return false
+                    }
+                }
+                return true
+            }
+        }
+    }
+    
+    return false
+}
+
 func main() {
     rand.Seed(time.Now().UnixNano())
     
@@ -489,42 +503,45 @@ func main() {
     d.VehicleCap = 40
     
     s0 := GenRandomSolution(&d)
-    s := Copy(s0)
+    
+    s := s0.Copy()
     
     vnd := hx.VND[Solution]()
     vnd.AddImprovingStrategy(ImproveBySwapingAdjacent)
     vnd.AddImprovingStrategyEx(ImproveByReinsertingEx)
-    vnd.AddImprovingStrategy(ImproveBy2Opt)
+    vnd.AddImprovingStrategyEx(ImproveBy2OptEx)
     vnd.SetImproveCallback(ImproveCallback)
-    vnd.Improve(&s)
+    vnd.Improve(&s, s.Cost)
     
     fmt.Println("VND Solution:")
     Print(s)
     PlotSolution(s, "s1.svg")
     
-    s = Copy(s0)
+    /*
+    s = s0.Copy()
     
     sa := hx.SA[Solution]()
     sa.IterationsEachTemperature = 100
     sa.InitialTemperature = 100
     sa.CoolingRate = 0.999
     sa.SetImproveCallback(ImproveCallback)
-    sa.AddImprovingStrategy(ImproveBy2Opt)
+    sa.AddImprovingStrategyEx(ImproveBy2OptEx)
     sa.AddAlteringStrategy(AlterByReinserting)
     sa.Improve(&s)
     
     fmt.Println("SA Solution:")
     Print(s)
     PlotSolution(s, "s2.svg")
+    */
     
-    s = Copy(s0)
+    s = s0.Copy()
     
     ils := hx.ILS[Solution]()
     ils.MaxNonImprovingIter = 20
     ils.SetImproveCallback(ImproveCallback)
     ils.AddImprovingStrategy(ImproveBySwapingAdjacent)
     ils.AddImprovingStrategyEx(ImproveByReinsertingEx)
-    ils.AddImprovingStrategy(ImproveBy2Opt)
+    ils.AddImprovingStrategyEx(ImproveBy2OptEx)
     ils.AddAlteringStrategy(AlterBySwapingAdjacent)
     ils.AddAlteringStrategy(AlterByReinserting)
     ils.Improve(&s)
@@ -532,6 +549,20 @@ func main() {
     fmt.Println("ILS Solution:")
     Print(s)
     PlotSolution(s, "s3.svg")
+    
+    s = s0.Copy()
+    
+    ts := hx.TS[Solution]()
+    ts.MaxNonImprovingIter = 100
+    ts.TabuListMaxSize = 50
+    ts.SetImproveCallback(ImproveCallback)
+    ts.AddImprovingStrategyEx(ImproveByReinsertingEx)
+    ts.AddImprovingStrategyEx(ImproveBy2OptEx)
+    ts.Improve(&s)
+    
+    fmt.Println("TS Solution:")
+    Print(s)
+    PlotSolution(s, "s4.svg")
 }
 
 
