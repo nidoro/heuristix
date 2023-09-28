@@ -22,9 +22,12 @@ Implemented metaheuristics:
 See `/examples`
 
 ## Importing
-
-    import github.com/nidoro/heuristix
+```go
+import "github.com/nidoro/heuristix"
+```
 
 ## Installation
 
-    go get github.com/nidoro/heuristix@latest
+```shell
+go get github.com/nidoro/heuristix@latest
+```
