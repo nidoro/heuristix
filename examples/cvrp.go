@@ -6,7 +6,7 @@ import (
     "time"
     //"github.com/davecgh/go-spew/spew"
     "fmt"
-    "hx"
+    "github.com/nidoro/heuristix"
     
     "image/color"
     "gonum.org/v1/plot"
