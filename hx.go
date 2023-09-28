@@ -42,7 +42,7 @@ type AlgStateInterface[T any] interface {
     AcceptSolution(s *T, cost float64) bool
     AcceptCost(s *T, newCost float64) (bool, T)
     AddImprovingStrategy(strategy ImprovementStrategy[T])
-    LogImprovement(s *T)
+    LogCost(info string, s *T)
 }
 
 func (alg *AlgState[T]) AddImprovingStrategy(strategy ImprovementStrategy[T]) {
@@ -53,15 +53,9 @@ func (alg *AlgState[T]) AddImprovingStrategyEx(strategy ImprovementStrategyEx[T]
     alg.ImproveStrategiesEx = append(alg.ImproveStrategiesEx, strategy)
 }
 
-func (alg AlgState[T]) LogImprovement() {
+func (alg AlgState[T]) LogCost(info string, cost float64) {
     if alg.Verbose {
-        fmt.Printf("Improvement %-4d | Cost: %-14.4f\n", alg.Improvements, alg.BestCost)
-    }
-}
-
-func (alg AlgState[T]) LogInitialSolution(cost float64) {
-    if alg.Verbose {
-        fmt.Printf("Initial Solution | Cost: %-14.4f\n", cost)
+        fmt.Printf("%-16s | Cost: %-14.4f\n", info, cost)
     }
 }
 
@@ -105,11 +99,14 @@ func SetStrategiesEx [T any] (vnd *VNDAlg[T], strategies [] ImprovementStrategyE
 }
 
 func (vnd *VNDAlg[T]) Improve(s *T, cost float64) bool {
+    if vnd.Verbose { fmt.Println("[STARTING VND]") }
+    
     stg := 0
     improved := false
     vnd.CurrentCost = cost
+    vnd.BestCost = cost
     
-    vnd.LogInitialSolution(cost)
+    vnd.LogCost("Initial Solution", cost)
     
     for stg < len(vnd.ImproveStrategiesEx) {
         vnd.CurrentStrategy = stg
@@ -123,11 +120,14 @@ func (vnd *VNDAlg[T]) Improve(s *T, cost float64) bool {
             vnd.Improvements += 1
             stg = 0
             vnd.OnImprovement(s, vnd)
-            vnd.LogImprovement()
+            vnd.LogCost(fmt.Sprintf("Improvement %-4d", vnd.Improvements), vnd.BestCost)
         } else {
             stg += 1
         }
     }
+    
+    if vnd.Verbose { fmt.Println("[FINISHED VND]") }
+    vnd.LogCost("Final Solution", vnd.BestCost)
     
     return improved
 }
@@ -190,7 +190,8 @@ func ILS [T Solution[T]]() ILSAlg[T] {
 }
 
 func (ils *ILSAlg[T]) Improve(s *T) {
-    ils.LogInitialSolution((*s).GetCost())
+    if ils.Verbose { fmt.Println("[STARTING ILS]") }
+    ils.LogCost("Initial Solution", (*s).GetCost())
     
     vnd := VND[T]()
     vnd.Verbose = false
@@ -206,7 +207,7 @@ func (ils *ILSAlg[T]) Improve(s *T) {
             ils.DiversificationStrategies[m](s)
         }
         
-        _ = vnd.Improve(s, (*s).GetCost())
+        vnd.Improve(s, (*s).GetCost())
         
         if best.GetCost() - (*s).GetCost() >= ZERO {
             ils.Improvements++
@@ -214,17 +215,20 @@ func (ils *ILSAlg[T]) Improve(s *T) {
             ils.BestCost = best.GetCost()
             nonImprovingIter = 1
             ils.OnImprovement(s, ils)
-            ils.LogImprovement()
+            vnd.LogCost(fmt.Sprintf("Improvement %-4d", vnd.Improvements), vnd.BestCost)
         } else {
             *s = best.Copy()
             nonImprovingIter++
         }
     }
+    
+    if ils.Verbose { fmt.Println("[FINISHED ILS]") }
+    ils.LogCost("Final Solution", (*s).GetCost())
 }
 
 // SAAlg struct and interface
 //--------------------------------
-type SAAlg [T Solution[T]] struct {
+type SAAlg[T Solution[T]] struct {
     HeuristicBase[T]
     IterationsEachTemperature int
     InitialTemperature float64
@@ -232,18 +236,19 @@ type SAAlg [T Solution[T]] struct {
     CoolingRate float64
 }
 
-func SA [T Solution[T]] () SAAlg[T] {
+func SA[T Solution[T]]() SAAlg[T] {
     return SAAlg[T] {
         HeuristicBase: CreateHeuristicBase[T](),
         IterationsEachTemperature: 1,
         InitialTemperature: 1000,
         MinTemperature: 0.001,
-        CoolingRate: 0.999,
+        CoolingRate: 0.001,
     }
 }
 
 func (sa *SAAlg[T]) Improve(s *T) {
-    sa.LogInitialSolution((*s).GetCost())
+    if sa.Verbose { fmt.Println("[STARTING SA]") }
+    sa.LogCost("Initial Solution", (*s).GetCost())
     
     temperature := sa.InitialTemperature
     best := (*s).Copy()
@@ -264,19 +269,21 @@ func (sa *SAAlg[T]) Improve(s *T) {
                 best = *s
                 sa.BestCost = best.GetCost()
                 sa.OnImprovement(s, sa)
-                sa.LogImprovement()
+                sa.LogCost(fmt.Sprintf("Improvement %-4d", sa.Improvements), sa.BestCost)
             }
         }
         
-        temperature *= sa.CoolingRate
+        temperature *= (1-sa.CoolingRate)
     }
     
     *s = best
     
     vnd := VND[T]()
-    vnd.Verbose = false
     SetStrategiesEx(&vnd, sa.ImproveStrategiesEx)
     vnd.Improve(s, (*s).GetCost())
+    
+    if sa.Verbose { fmt.Println("[FINISHED SA]") }
+    sa.LogCost("Final Solution", (*s).GetCost())
 }
 
 // TabuSearch
@@ -324,18 +331,12 @@ func (ts *TSAlg[T]) AcceptSolution(sl *T, cost float64) bool {
 }
 
 func (ts *TSAlg[T]) Improve(s *T) {
-    ts.LogInitialSolution((*s).GetCost())
-    
-    vnd := VND[T]()
-    vnd.Verbose = false
-    SetStrategiesEx(&vnd, ts.ImproveStrategiesEx)
-    
-    vnd.Improve(s, (*s).GetCost())
+    if ts.Verbose { fmt.Println("[STARTING TS]") }
+    ts.LogCost("Initial Solution", (*s).GetCost())
     
     nonImprovingIter := 0
     
     ts.BestSolution = (*s).Copy()
-    
     
     for nonImprovingIter < ts.MaxNonImprovingIter {
         ts.CurrentSolution = (*s).Copy()
@@ -357,7 +358,7 @@ func (ts *TSAlg[T]) Improve(s *T) {
             nonImprovingIter = 0
             ts.BestCost = ts.BestSolution.GetCost()
             ts.OnImprovement(s, ts)
-            ts.LogImprovement()
+            ts.LogCost(fmt.Sprintf("Improvement %-4d", ts.Improvements), ts.BestCost)
         } else {
             nonImprovingIter++
         }
@@ -369,6 +370,8 @@ func (ts *TSAlg[T]) Improve(s *T) {
     }
     
     *s = ts.BestSolution
+    if ts.Verbose { fmt.Println("[FINISHED TS]") }
+    ts.LogCost("Final Solution", (*s).GetCost())
 }
 
 

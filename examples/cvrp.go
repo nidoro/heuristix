@@ -500,35 +500,24 @@ func main() {
     rand.Seed(time.Now().UnixNano())
     
     d := GenRandomData(40, 100, 100)
-    d.VehicleCap = 40
+    d.VehicleCap = 20
     
     s0 := GenRandomSolution(&d)
-    
-    s := s0.Copy()
-    
     vnd := hx.VND[Solution]()
     vnd.AddImprovingStrategy(ImproveBySwapingAdjacent)
     vnd.AddImprovingStrategyEx(ImproveByReinsertingEx)
     vnd.AddImprovingStrategyEx(ImproveBy2OptEx)
-    vnd.Improve(&s, s.Cost)
+    vnd.Improve(&s0, s0.Cost)
+    fmt.Println()
     
-    fmt.Println("VND Solution:")
-    Print(s)
-    PlotSolution(s, "s1.svg")
-    
-    s = s0.Copy()
-    
+    saSolution := s0.Copy()
     sa := hx.SA[Solution]()
     sa.AddImprovingStrategyEx(ImproveBy2OptEx)
     sa.AddDiversificationStrategy(DiversityByReinserting)
-    sa.Improve(&s)
+    sa.Improve(&saSolution)
+    fmt.Println()
     
-    fmt.Println("SA Solution:")
-    Print(s)
-    PlotSolution(s, "s2.svg")
-    
-    s = s0.Copy()
-    
+    ilsSolution := s0.Copy()
     ils := hx.ILS[Solution]()
     ils.MaxNonImprovingIter = 20
     ils.AddImprovingStrategy(ImproveBySwapingAdjacent)
@@ -536,24 +525,37 @@ func main() {
     ils.AddImprovingStrategyEx(ImproveBy2OptEx)
     ils.AddDiversificationStrategy(DiversityBySwapingAdjacent)
     ils.AddDiversificationStrategy(DiversityByReinserting)
-    ils.Improve(&s)
+    ils.Improve(&ilsSolution)
+    fmt.Println()
     
-    fmt.Println("ILS Solution:")
-    Print(s)
-    PlotSolution(s, "s3.svg")
-    
-    s = s0.Copy()
-    
+    tsSolution := s0.Copy()
     ts := hx.TS[Solution]()
     ts.MaxNonImprovingIter = 100
     ts.TabuListMaxSize = 50
     ts.AddImprovingStrategyEx(ImproveByReinsertingEx)
     ts.AddImprovingStrategyEx(ImproveBy2OptEx)
-    ts.Improve(&s)
+    ts.Improve(&tsSolution)
+    fmt.Println()
+    
+    fmt.Println("VND Solution:")
+    Print(s0)
+    PlotSolution(s0, "vnd.svg")
+    fmt.Println()
+    
+    fmt.Println("SA Solution:")
+    Print(saSolution)
+    PlotSolution(saSolution, "sa.svg")
+    fmt.Println()
+    
+    fmt.Println("ILS Solution:")
+    Print(ilsSolution)
+    PlotSolution(ilsSolution, "ils.svg")
+    fmt.Println()
     
     fmt.Println("TS Solution:")
-    Print(s)
-    PlotSolution(s, "s4.svg")
+    Print(tsSolution)
+    PlotSolution(tsSolution, "ts.svg")
+    fmt.Println()
 }
 
 
