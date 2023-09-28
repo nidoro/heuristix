@@ -3,7 +3,7 @@
 > **Warning**
 > This is a work-in-progress. Use it at your own risk.
 
-## Intro
+## Introduction
 
 **heuristix** is a framework for implementing optimization heuristics
 in Go. It implements the basic algorithm for various metaheuristics,
@@ -12,10 +12,10 @@ to solve an optimization problem defined by you.
 
 Implemented metaheuristics:
 
-- VND: Variable Neighborhood Descent
-- ILS: Iterated Local Search
-- SA: Simulated Annealing
-- TS: Tabu Search
+- VND - Variable Neighborhood Descent
+- ILS - Iterated Local Search
+- SA - Simulated Annealing
+- TS - Tabu Search
 
 ## Basic Usage
 
