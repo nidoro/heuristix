@@ -223,7 +223,7 @@ func ImproveByReinsertingEx(s *Solution, heu hx.Heuristic[Solution]) float64 {
                     
                     ok, sl := heu.AcceptCost(s, newCost)
                     
-                    if (ok) {
+                    if ok {
                         route1 := sl.Routes[r1]
                         route2 := sl.Routes[r2]
                         
@@ -239,7 +239,7 @@ func ImproveByReinsertingEx(s *Solution, heu hx.Heuristic[Solution]) float64 {
                             route2.Load += route2.Load + nodeB.Demand
                         }
                         sl.Cost = newCost
-                        if (heu.AcceptSolution(&sl, newCost)) {
+                        if heu.AcceptSolution(&sl, newCost) {
                             *s = sl
                             return costDiff
                         }
@@ -340,7 +340,7 @@ func ImproveBySwapingAdjacent(s *Solution) float64 {
     return 0.0
 }
 
-func DiversityBySwapingAdjacent(s *Solution) float64 {
+func DiversifyBySwapingAdjacent(s *Solution) float64 {
     // -> a -> b -> c -> d
     // -> a -> c -> b -> d
     data := s.Data
@@ -383,7 +383,7 @@ func (s Solution) Copy() Solution {
     return result
 }
 
-func DiversityByReinserting(s *Solution) float64 {
+func DiversifyByReinserting(s *Solution) float64 {
     d := s.Data
     
     for {
@@ -513,7 +513,7 @@ func main() {
     saSolution := s0.Copy()
     sa := hx.SA[Solution]()
     sa.AddImprovingStrategyEx(ImproveBy2OptEx)
-    sa.AddDiversificationStrategy(DiversityByReinserting)
+    sa.AddDiversificationStrategy(DiversifyByReinserting)
     sa.Improve(&saSolution)
     fmt.Println()
     
@@ -523,8 +523,8 @@ func main() {
     ils.AddImprovingStrategy(ImproveBySwapingAdjacent)
     ils.AddImprovingStrategyEx(ImproveByReinsertingEx)
     ils.AddImprovingStrategyEx(ImproveBy2OptEx)
-    ils.AddDiversificationStrategy(DiversityBySwapingAdjacent)
-    ils.AddDiversificationStrategy(DiversityByReinserting)
+    ils.AddDiversificationStrategy(DiversifyBySwapingAdjacent)
+    ils.AddDiversificationStrategy(DiversifyByReinserting)
     ils.Improve(&ilsSolution)
     fmt.Println()
     
