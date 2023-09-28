@@ -5,9 +5,9 @@
 
 ## Introduction
 
-**heuristix** is a framework for implementing optimization heuristics
-in Go. It implements the basic algorithm for various metaheuristics,
-to which you can "plug" your own improving and diversigying strategies
+**heuristix**, or just **hx**, is a collection of optimization metaheuristics
+implementations in Go. It is an heuristic implementation framework,
+to which you can "plug" your own improving and diversifying strategies
 to solve an optimization problem defined by you.
 
 Implemented metaheuristics:
