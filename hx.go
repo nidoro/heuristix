@@ -1,7 +1,7 @@
 package hx
 
 import (
-    //"fmt"
+    "fmt"
     "math"
     "math/rand"
 )
@@ -14,47 +14,58 @@ func GetRandomInt(min int, max int) int {
 
 // AlgState struct and interface
 //--------------------------------
-type ImproveStrategy[T any] func (s *T) float64
-type ImproveStrategyEx[T any] func (s *T, heu Heuristic[T]) float64
-type ImproveCallbackFunc[T any] func (s *T, heu Heuristic[T])
+type ImprovementStrategy[T any] func (s *T) float64
+type ImprovementStrategyEx[T any] func (s *T, heu Heuristic[T]) float64
+type ImprovementCallback[T any] func (s *T, heu Heuristic[T])
 
 type AlgState[T any] struct {
-    ImproveStrategiesEx [] ImproveStrategyEx[T]
-    ImproveCallback     ImproveCallbackFunc[T]
+    ImproveStrategiesEx [] ImprovementStrategyEx[T]
+    OnImprovement       ImprovementCallback[T]
     
     Improvements int
     CurrentStrategy int
     CurrentCost float64
     NewCost float64
+    BestCost float64
+    Verbose bool
 }
 
 func CreateAlgState[T any]() AlgState[T] {
     return AlgState[T] {
-        ImproveCallback: func (s *T, heu Heuristic[T]) {},
+        OnImprovement: func (s *T, heu Heuristic[T]) {},
+        Verbose: true,
     }
 }
 
 type AlgStateInterface[T any] interface {
     Improve(solution *T)
-    Accept(s *T, cost float64) bool
+    AcceptSolution(s *T, cost float64) bool
     AcceptCost(s *T, newCost float64) (bool, T)
-    AddImprovingStrategy(strategy ImproveStrategy[T])
-    SetImproveCallback(callback ImproveCallbackFunc[T])
+    AddImprovingStrategy(strategy ImprovementStrategy[T])
+    LogImprovement(s *T)
 }
 
-func (alg *AlgState[T]) AddImprovingStrategy(strategy ImproveStrategy [T]) {
+func (alg *AlgState[T]) AddImprovingStrategy(strategy ImprovementStrategy[T]) {
     alg.ImproveStrategiesEx = append(alg.ImproveStrategiesEx, func(s *T, heu Heuristic[T]) float64 {return strategy(s)})
 }
 
-func (alg *AlgState[T]) AddImprovingStrategyEx(strategy ImproveStrategyEx [T]) {
+func (alg *AlgState[T]) AddImprovingStrategyEx(strategy ImprovementStrategyEx[T]) {
     alg.ImproveStrategiesEx = append(alg.ImproveStrategiesEx, strategy)
 }
 
-func (alg *AlgState[T]) SetImproveCallback(callback ImproveCallbackFunc[T]) {
-    alg.ImproveCallback = callback
+func (alg AlgState[T]) LogImprovement() {
+    if alg.Verbose {
+        fmt.Printf("Improvement %-4d | Cost: %-14.4f\n", alg.Improvements, alg.BestCost)
+    }
 }
 
-func (alg AlgState[T]) Accept(s *T, cost float64) bool {
+func (alg AlgState[T]) LogInitialSolution(cost float64) {
+    if alg.Verbose {
+        fmt.Printf("Initial Solution | Cost: %-14.4f\n", cost)
+    }
+}
+
+func (alg AlgState[T]) AcceptSolution(s *T, cost float64) bool {
     return true
 }
 
@@ -88,8 +99,8 @@ func VND [T any] () VNDAlg[T] {
     }
 }
 
-func SetStrategiesEx [T any] (vnd *VNDAlg[T], strategies [] ImproveStrategyEx[T]) {
-    vnd.ImproveStrategiesEx = make([] ImproveStrategyEx[T], len(strategies))
+func SetStrategiesEx [T any] (vnd *VNDAlg[T], strategies [] ImprovementStrategyEx[T]) {
+    vnd.ImproveStrategiesEx = make([] ImprovementStrategyEx[T], len(strategies))
     copy(vnd.ImproveStrategiesEx, strategies)
 }
 
@@ -97,6 +108,8 @@ func (vnd *VNDAlg[T]) Improve(s *T, cost float64) bool {
     stg := 0
     improved := false
     vnd.CurrentCost = cost
+    
+    vnd.LogInitialSolution(cost)
     
     for stg < len(vnd.ImproveStrategiesEx) {
         vnd.CurrentStrategy = stg
@@ -106,9 +119,11 @@ func (vnd *VNDAlg[T]) Improve(s *T, cost float64) bool {
         if costDiff < 0.0 {
             improved = true
             vnd.CurrentCost += costDiff
+            vnd.BestCost = vnd.CurrentCost
             vnd.Improvements += 1
-            vnd.ImproveCallback(s, &vnd.AlgState)
             stg = 0
+            vnd.OnImprovement(s, vnd)
+            vnd.LogImprovement()
         } else {
             stg += 1
         }
@@ -120,7 +135,7 @@ func (vnd *VNDAlg[T]) Improve(s *T, cost float64) bool {
 // User interface
 //----------------
 type Heuristic[T any] interface {
-    Accept(s *T, cost float64) bool
+    AcceptSolution(s *T, cost float64) bool
     AcceptCost(s *T, newCost float64) (bool, T)
     GetImprovementsCount() int
     GetCurrentStrategy() int
@@ -138,19 +153,25 @@ type ComparableSolution[T any] interface {
     Compare(s T) bool
 }
 
-type AlterSolutionMethod[T Solution[T]] func (s *T) float64
+type DiversificationStrategy[T Solution[T]] func (s *T) float64
 
 type HeuristicBase[T Solution[T]] struct {
     AlgState[T]
-    AlterSolutionMethods [] AlterSolutionMethod[T]
+    DiversificationStrategies [] DiversificationStrategy[T]
 }
 
 type HeuristicInterface interface {
-    AddAlteringStrategy()
+    AddDiversificationStrategy()
 }
 
-func (h *HeuristicBase[T]) AddAlteringStrategy(method AlterSolutionMethod[T]) {
-    h.AlterSolutionMethods = append(h.AlterSolutionMethods, method)
+func (h *HeuristicBase[T]) AddDiversificationStrategy(method DiversificationStrategy[T]) {
+    h.DiversificationStrategies = append(h.DiversificationStrategies, method)
+}
+
+func CreateHeuristicBase[T Solution[T]]() HeuristicBase[T] {
+    return HeuristicBase[T]{
+        AlgState: CreateAlgState[T](),
+    }
 }
 
 // ILSAlg struct
@@ -161,12 +182,18 @@ type ILSAlg [T Solution[T]] struct {
 }
 
 // Constructor
-func ILS [T Solution[T]] () ILSAlg[T] {
-    return ILSAlg[T] { MaxNonImprovingIter: 5 }
+func ILS [T Solution[T]]() ILSAlg[T] {
+    return ILSAlg[T] {
+        HeuristicBase: CreateHeuristicBase[T](),
+        MaxNonImprovingIter: 5,
+    }
 }
 
 func (ils *ILSAlg[T]) Improve(s *T) {
+    ils.LogInitialSolution((*s).GetCost())
+    
     vnd := VND[T]()
+    vnd.Verbose = false
     SetStrategiesEx(&vnd, ils.ImproveStrategiesEx)
     
     nonImprovingIter := 0
@@ -175,8 +202,8 @@ func (ils *ILSAlg[T]) Improve(s *T) {
     
     for nonImprovingIter <= ils.MaxNonImprovingIter {
         for p := 0; p < nonImprovingIter; p++ {
-            m := GetRandomInt(0, len(ils.AlterSolutionMethods)-1)
-            ils.AlterSolutionMethods[m](s)
+            m := GetRandomInt(0, len(ils.DiversificationStrategies)-1)
+            ils.DiversificationStrategies[m](s)
         }
         
         _ = vnd.Improve(s, (*s).GetCost())
@@ -184,8 +211,10 @@ func (ils *ILSAlg[T]) Improve(s *T) {
         if best.GetCost() - (*s).GetCost() >= ZERO {
             ils.Improvements++
             best = (*s).Copy()
+            ils.BestCost = best.GetCost()
             nonImprovingIter = 1
-            ils.ImproveCallback(s, ils)
+            ils.OnImprovement(s, ils)
+            ils.LogImprovement()
         } else {
             *s = best.Copy()
             nonImprovingIter++
@@ -205,6 +234,7 @@ type SAAlg [T Solution[T]] struct {
 
 func SA [T Solution[T]] () SAAlg[T] {
     return SAAlg[T] {
+        HeuristicBase: CreateHeuristicBase[T](),
         IterationsEachTemperature: 1,
         InitialTemperature: 1000,
         MinTemperature: 0.001,
@@ -213,9 +243,7 @@ func SA [T Solution[T]] () SAAlg[T] {
 }
 
 func (sa *SAAlg[T]) Improve(s *T) {
-    vnd := VND[T]()
-    SetStrategiesEx(&vnd, sa.ImproveStrategiesEx)
-    _ = vnd.Improve(s, (*s).GetCost())
+    sa.LogInitialSolution((*s).GetCost())
     
     temperature := sa.InitialTemperature
     best := (*s).Copy()
@@ -224,8 +252,8 @@ func (sa *SAAlg[T]) Improve(s *T) {
         for i := 0; i < sa.IterationsEachTemperature; i++ {
             candidate := (*s).Copy()
             
-            sa.CurrentStrategy = GetRandomInt(0, len(sa.AlterSolutionMethods)-1)
-            costDiff := sa.AlterSolutionMethods[sa.CurrentStrategy](&candidate)
+            sa.CurrentStrategy = GetRandomInt(0, len(sa.DiversificationStrategies)-1)
+            costDiff := sa.DiversificationStrategies[sa.CurrentStrategy](&candidate)
             
             if costDiff < 0.0 || rand.Float64() < math.Exp(-costDiff/temperature) {
                 *s = candidate
@@ -233,8 +261,10 @@ func (sa *SAAlg[T]) Improve(s *T) {
             
             if ((*s).GetCost() < best.GetCost()) {
                 sa.Improvements++
-                sa.ImproveCallback(s, sa)
                 best = *s
+                sa.BestCost = best.GetCost()
+                sa.OnImprovement(s, sa)
+                sa.LogImprovement()
             }
         }
         
@@ -242,7 +272,11 @@ func (sa *SAAlg[T]) Improve(s *T) {
     }
     
     *s = best
-    _ = vnd.Improve(s, (*s).GetCost())
+    
+    vnd := VND[T]()
+    vnd.Verbose = false
+    SetStrategiesEx(&vnd, sa.ImproveStrategiesEx)
+    vnd.Improve(s, (*s).GetCost())
 }
 
 // TabuSearch
@@ -261,6 +295,7 @@ type TSAlg[T ComparableSolution[T]] struct {
 
 func TS[T ComparableSolution[T]]() TSAlg[T] {
     return TSAlg[T] {
+        HeuristicBase: CreateHeuristicBase[T](),
         TabuListMaxSize: 20,
         MaxNonImprovingIter: 10,
     }
@@ -270,7 +305,7 @@ func (ts *TSAlg[T]) AcceptCost(s *T, newCost float64) (bool, T) {
     return true, (*s).Copy()
 }
 
-func (ts *TSAlg[T]) Accept(sl *T, cost float64) bool {
+func (ts *TSAlg[T]) AcceptSolution(sl *T, cost float64) bool {
     isTabu := false
     
     for _, s2 := range ts.TabuList {
@@ -289,7 +324,10 @@ func (ts *TSAlg[T]) Accept(sl *T, cost float64) bool {
 }
 
 func (ts *TSAlg[T]) Improve(s *T) {
+    ts.LogInitialSolution((*s).GetCost())
+    
     vnd := VND[T]()
+    vnd.Verbose = false
     SetStrategiesEx(&vnd, ts.ImproveStrategiesEx)
     
     vnd.Improve(s, (*s).GetCost())
@@ -297,6 +335,7 @@ func (ts *TSAlg[T]) Improve(s *T) {
     nonImprovingIter := 0
     
     ts.BestSolution = (*s).Copy()
+    
     
     for nonImprovingIter < ts.MaxNonImprovingIter {
         ts.CurrentSolution = (*s).Copy()
@@ -314,9 +353,11 @@ func (ts *TSAlg[T]) Improve(s *T) {
         
         if (ts.BestSolution.GetCost() - (*s).GetCost() >= ZERO) {
             ts.Improvements++
-            ts.ImproveCallback(s, ts)
             ts.BestSolution = (*s).Copy()
             nonImprovingIter = 0
+            ts.BestCost = ts.BestSolution.GetCost()
+            ts.OnImprovement(s, ts)
+            ts.LogImprovement()
         } else {
             nonImprovingIter++
         }

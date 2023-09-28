@@ -239,7 +239,7 @@ func ImproveByReinsertingEx(s *Solution, heu hx.Heuristic[Solution]) float64 {
                             route2.Load += route2.Load + nodeB.Demand
                         }
                         sl.Cost = newCost
-                        if (heu.Accept(&sl, newCost)) {
+                        if (heu.AcceptSolution(&sl, newCost)) {
                             *s = sl
                             return costDiff
                         }
@@ -297,7 +297,7 @@ func ImproveBy2OptEx(s *Solution, heu hx.Heuristic[Solution]) float64 {
                     }
                     
                     sl.Cost = newCost
-                    if heu.Accept(&sl, newCost) {
+                    if heu.AcceptSolution(&sl, newCost) {
                         *s = sl
                         return costDiff
                     }
@@ -340,7 +340,7 @@ func ImproveBySwapingAdjacent(s *Solution) float64 {
     return 0.0
 }
 
-func AlterBySwapingAdjacent(s *Solution) float64 {
+func DiversityBySwapingAdjacent(s *Solution) float64 {
     // -> a -> b -> c -> d
     // -> a -> c -> b -> d
     data := s.Data
@@ -383,7 +383,7 @@ func (s Solution) Copy() Solution {
     return result
 }
 
-func AlterByReinserting(s *Solution) float64 {
+func DiversityByReinserting(s *Solution) float64 {
     d := s.Data
     
     for {
@@ -439,7 +439,7 @@ func AlterByReinserting(s *Solution) float64 {
     }
 }
 
-func ImproveCallback(s *Solution, heu hx.Heuristic[Solution]) {
+func ImprovementCallback(s *Solution, heu hx.Heuristic[Solution]) {
     fmt.Printf("INFO | Improved %-4d | Cost: %-14.4f | CurrentStrategy: %d\n", heu.GetImprovementsCount(), s.Cost, heu.GetCurrentStrategy())
     //Print(*s)
 }
@@ -510,40 +510,32 @@ func main() {
     vnd.AddImprovingStrategy(ImproveBySwapingAdjacent)
     vnd.AddImprovingStrategyEx(ImproveByReinsertingEx)
     vnd.AddImprovingStrategyEx(ImproveBy2OptEx)
-    vnd.SetImproveCallback(ImproveCallback)
     vnd.Improve(&s, s.Cost)
     
     fmt.Println("VND Solution:")
     Print(s)
     PlotSolution(s, "s1.svg")
     
-    /*
     s = s0.Copy()
     
     sa := hx.SA[Solution]()
-    sa.IterationsEachTemperature = 100
-    sa.InitialTemperature = 100
-    sa.CoolingRate = 0.999
-    sa.SetImproveCallback(ImproveCallback)
     sa.AddImprovingStrategyEx(ImproveBy2OptEx)
-    sa.AddAlteringStrategy(AlterByReinserting)
+    sa.AddDiversificationStrategy(DiversityByReinserting)
     sa.Improve(&s)
     
     fmt.Println("SA Solution:")
     Print(s)
     PlotSolution(s, "s2.svg")
-    */
     
     s = s0.Copy()
     
     ils := hx.ILS[Solution]()
     ils.MaxNonImprovingIter = 20
-    ils.SetImproveCallback(ImproveCallback)
     ils.AddImprovingStrategy(ImproveBySwapingAdjacent)
     ils.AddImprovingStrategyEx(ImproveByReinsertingEx)
     ils.AddImprovingStrategyEx(ImproveBy2OptEx)
-    ils.AddAlteringStrategy(AlterBySwapingAdjacent)
-    ils.AddAlteringStrategy(AlterByReinserting)
+    ils.AddDiversificationStrategy(DiversityBySwapingAdjacent)
+    ils.AddDiversificationStrategy(DiversityByReinserting)
     ils.Improve(&s)
     
     fmt.Println("ILS Solution:")
@@ -555,7 +547,6 @@ func main() {
     ts := hx.TS[Solution]()
     ts.MaxNonImprovingIter = 100
     ts.TabuListMaxSize = 50
-    ts.SetImproveCallback(ImproveCallback)
     ts.AddImprovingStrategyEx(ImproveByReinsertingEx)
     ts.AddImprovingStrategyEx(ImproveBy2OptEx)
     ts.Improve(&s)
