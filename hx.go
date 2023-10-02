@@ -2,11 +2,16 @@ package hx
 
 import (
     "fmt"
+    "sort"
     "math"
     "math/rand"
 )
 
 const ZERO = 0.00000001
+
+func GetRandomNumber(min float64, max float64) float64 {
+    return min + rand.Float64()*(max-min)
+}
 
 func GetRandomInt(min int, max int) int {
     return rand.Intn(max-min+1) + min
@@ -19,7 +24,7 @@ type ImprovementStrategyEx[T any] func (s *T, heu Heuristic[T]) float64
 type ImprovementCallback[T any] func (s *T, heu Heuristic[T])
 
 type AlgState[T any] struct {
-    ImproveStrategiesEx [] ImprovementStrategyEx[T]
+    ImproveStrategiesEx []ImprovementStrategyEx[T]
     OnImprovement       ImprovementCallback[T]
     
     Improvements int
@@ -38,7 +43,6 @@ func CreateAlgState[T any]() AlgState[T] {
 }
 
 type AlgStateInterface[T any] interface {
-    Improve(solution *T)
     AcceptSolution(s *T, cost float64) bool
     AcceptCost(s *T, newCost float64) (bool, T)
     AddImprovingStrategy(strategy ImprovementStrategy[T])
@@ -93,8 +97,8 @@ func VND [T any] () VNDAlg[T] {
     }
 }
 
-func SetStrategiesEx [T any] (vnd *VNDAlg[T], strategies [] ImprovementStrategyEx[T]) {
-    vnd.ImproveStrategiesEx = make([] ImprovementStrategyEx[T], len(strategies))
+func SetStrategiesEx [T any] (vnd *VNDAlg[T], strategies []ImprovementStrategyEx[T]) {
+    vnd.ImproveStrategiesEx = make([]ImprovementStrategyEx[T], len(strategies))
     copy(vnd.ImproveStrategiesEx, strategies)
 }
 
@@ -373,6 +377,124 @@ func (ts *TSAlg[T]) Improve(s *T) {
     if ts.Verbose { fmt.Println("[FINISHED TS]") }
     ts.LogCost("Final Solution", (*s).GetCost())
 }
+
+// Genetic Algorithm
+//-------------------------------
+type GAAlg[T Solution[T]] struct {
+    HeuristicBase[T]
+    MaxNonImprovingIter int
+    TournamentSize int
+    CrossoverStrategies []func(father T, mother T) T
+    MutationStrategies []func(s *T)
+    EliteSize int
+    MutationProbability float64
+}
+
+func GA[T Solution[T]]() GAAlg[T] {
+    return GAAlg[T] {
+        MaxNonImprovingIter: 5,
+        TournamentSize: 2,
+    }
+}
+
+func Contains[T int](slice []T, item T) bool {
+    for i := range slice {
+        if slice[i] == item {
+            return true
+        }
+    }
+    return false
+}
+
+func SelectParents[T Solution[T]](population []T, numParents int, tournamentSize int) []T {
+    parents := make([]T, numParents)
+    
+    candidates := make([]int, 0, numParents * tournamentSize)
+    
+    for j := 0; j < numParents * tournamentSize; j++ {
+        index := GetRandomInt(0, len(population)-1)
+        for Contains(candidates, index) {
+            index = GetRandomInt(0, len(population)-1)
+        }
+        candidates = append(candidates, index)
+    }
+    
+    for i := 0; i < numParents; i++ {
+        j := i*tournamentSize
+        best := population[candidates[j]]
+        
+        for k := 0; k < tournamentSize; k++ {
+            candidate := population[candidates[j+k]]
+            if candidate.GetCost() < best.GetCost() {
+                best = population[candidates[j]]
+            }
+        }
+        
+        parents[i] = best
+    }
+        
+    
+    return parents
+}
+
+type ByCost[T Solution[T]] []T
+func (a ByCost[T]) Len() int           { return len(a) }
+func (a ByCost[T]) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByCost[T]) Less(i, j int) bool { return a[i].GetCost() < a[j].GetCost() }
+
+func (ga *GAAlg[T]) Improve(population []T) T {
+    if ga.Verbose { fmt.Println("[STARTING GA]") }
+    
+    sort.Sort(ByCost[T](population))
+    best := population[0]
+    
+    nonImprovingIter := 0
+    
+    // TODO: untested
+    for nonImprovingIter < ga.MaxNonImprovingIter {
+        parents := SelectParents(population, len(population)/2, ga.TournamentSize)
+        
+        for _, p := range parents {
+            fmt.Println(p.GetCost())
+        }
+        
+        for i := ga.EliteSize; i < len(population); i++ {
+            p1Index := GetRandomInt(0, len(parents)-1)
+            p2Index := GetRandomInt(0, len(parents)-1)
+            
+            for p1Index == p2Index {
+                p2Index = GetRandomInt(0, len(parents)-1)
+            }
+            
+            father := parents[p1Index]
+            mother := parents[p2Index]
+            
+            child := ga.CrossoverStrategies[0](father, mother)
+            
+            if rand.Float64() <= ga.MutationProbability {
+                ga.MutationStrategies[0](&child)
+            }
+            
+            population[i] = child
+        }
+        
+        sort.Sort(ByCost[T](population))
+        
+        if population[0].GetCost() < best.GetCost() {
+            best = population[0]
+            nonImprovingIter = 0
+        } else {
+            nonImprovingIter++
+        }
+    }
+    
+    ga.LogCost("First Solution", best.GetCost())
+    
+    return best
+}
+
+
+
 
 
 

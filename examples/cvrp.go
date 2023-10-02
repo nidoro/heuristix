@@ -161,6 +161,12 @@ func GenRandomSolution(d *Data) Solution {
     for r := 0; r < len(s.Routes); r++ {
         route := s.Routes[r]
         
+        // Suffle
+        for i := 1; i < len(route.Order)-1; i++ {
+            j := GetRandomInt(1, len(route.Order)-2)
+            Swap(&route.Order[i], &route.Order[j])
+        }
+        
         for i := 0; i < len(route.Order)-1; i++ {
             s.Cost += d.Edges[route.Order[i]][route.Order[i+1]]
         }
@@ -501,6 +507,23 @@ func main() {
     
     d := GenRandomData(40, 100, 100)
     d.VehicleCap = 20
+    
+    pop0 := make([]Solution, 10)
+    
+    for i := range pop0 {
+        pop0[i] = GenRandomSolution(&d)
+        Print(pop0[i])
+    }
+    
+    ga := hx.GA[Solution]()
+    s := ga.Improve(pop0)
+    
+    fmt.Println("GA Solution:")
+    Print(s)
+    PlotSolution(s, "ga.svg")
+    fmt.Println()
+    
+    return
     
     s0 := GenRandomSolution(&d)
     vnd := hx.VND[Solution]()
