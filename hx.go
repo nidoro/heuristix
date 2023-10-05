@@ -103,7 +103,7 @@ func SetStrategiesEx [T any] (vnd *VNDAlg[T], strategies []ImprovementStrategyEx
 }
 
 func (vnd *VNDAlg[T]) Improve(s *T, cost float64) bool {
-    if vnd.Verbose { fmt.Println("[STARTING VND]") }
+    if vnd.Verbose { fmt.Println("[VND STARTING]") }
     
     stg := 0
     improved := false
@@ -130,8 +130,8 @@ func (vnd *VNDAlg[T]) Improve(s *T, cost float64) bool {
         }
     }
     
-    if vnd.Verbose { fmt.Println("[FINISHED VND]") }
     vnd.LogCost("Final Solution", vnd.BestCost)
+    if vnd.Verbose { fmt.Println("[FINISHED VND]") }
     
     return improved
 }
@@ -194,7 +194,7 @@ func ILS [T Solution[T]]() ILSAlg[T] {
 }
 
 func (ils *ILSAlg[T]) Improve(s *T) {
-    if ils.Verbose { fmt.Println("[STARTING ILS]") }
+    if ils.Verbose { fmt.Println("[ILS STARTING]") }
     ils.LogCost("Initial Solution", (*s).GetCost())
     
     vnd := VND[T]()
@@ -226,8 +226,8 @@ func (ils *ILSAlg[T]) Improve(s *T) {
         }
     }
     
-    if ils.Verbose { fmt.Println("[FINISHED ILS]") }
     ils.LogCost("Final Solution", (*s).GetCost())
+    if ils.Verbose { fmt.Println("[FINISHED ILS]") }
 }
 
 // SAAlg struct and interface
@@ -251,7 +251,7 @@ func SA[T Solution[T]]() SAAlg[T] {
 }
 
 func (sa *SAAlg[T]) Improve(s *T) {
-    if sa.Verbose { fmt.Println("[STARTING SA]") }
+    if sa.Verbose { fmt.Println("[SA STARTING]") }
     sa.LogCost("Initial Solution", (*s).GetCost())
     
     temperature := sa.InitialTemperature
@@ -286,8 +286,8 @@ func (sa *SAAlg[T]) Improve(s *T) {
     SetStrategiesEx(&vnd, sa.ImproveStrategiesEx)
     vnd.Improve(s, (*s).GetCost())
     
-    if sa.Verbose { fmt.Println("[FINISHED SA]") }
     sa.LogCost("Final Solution", (*s).GetCost())
+    if sa.Verbose { fmt.Println("[SA FINISHED]") }
 }
 
 // TabuSearch
@@ -335,7 +335,7 @@ func (ts *TSAlg[T]) AcceptSolution(sl *T, cost float64) bool {
 }
 
 func (ts *TSAlg[T]) Improve(s *T) {
-    if ts.Verbose { fmt.Println("[STARTING TS]") }
+    if ts.Verbose { fmt.Println("[TS STARTING]") }
     ts.LogCost("Initial Solution", (*s).GetCost())
     
     nonImprovingIter := 0
@@ -374,26 +374,31 @@ func (ts *TSAlg[T]) Improve(s *T) {
     }
     
     *s = ts.BestSolution
-    if ts.Verbose { fmt.Println("[FINISHED TS]") }
     ts.LogCost("Final Solution", (*s).GetCost())
+    if ts.Verbose { fmt.Println("[TS FINISHED]") }
 }
 
 // Genetic Algorithm
 //-------------------------------
+type CrossoverStrategy[T Solution[T]] func(father T, mother T) T
+
 type GAAlg[T Solution[T]] struct {
     HeuristicBase[T]
     MaxNonImprovingIter int
     TournamentSize int
-    CrossoverStrategies []func(father T, mother T) T
-    MutationStrategies []func(s *T)
-    EliteSize int
+    CrossoverStrategies []CrossoverStrategy[T]
+    Elitism float64
+    CrossoverProbability float64
     MutationProbability float64
 }
 
 func GA[T Solution[T]]() GAAlg[T] {
     return GAAlg[T] {
+        HeuristicBase: CreateHeuristicBase[T](),
         MaxNonImprovingIter: 5,
         TournamentSize: 2,
+        CrossoverProbability: 0.65,
+        MutationProbability: 0.1,
     }
 }
 
@@ -442,23 +447,28 @@ func (a ByCost[T]) Len() int           { return len(a) }
 func (a ByCost[T]) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByCost[T]) Less(i, j int) bool { return a[i].GetCost() < a[j].GetCost() }
 
+func (ga *GAAlg[T]) AddCrossoverStrategy(strategy CrossoverStrategy[T]) {
+    ga.CrossoverStrategies = append(ga.CrossoverStrategies, strategy)
+}
+
+func (ga *GAAlg[T]) AddMutationStrategy(strategy DiversificationStrategy[T]) {
+    ga.AddDiversificationStrategy(strategy)
+}
+
 func (ga *GAAlg[T]) Improve(population []T) T {
-    if ga.Verbose { fmt.Println("[STARTING GA]") }
+    if ga.Verbose { fmt.Println("[GA STARTING]") }
     
     sort.Sort(ByCost[T](population))
     best := population[0]
+    ga.LogCost("Initial Solution", best.GetCost())
     
     nonImprovingIter := 0
+    eliteSize := int(ga.Elitism * float64(len(population)))
     
-    // TODO: untested
     for nonImprovingIter < ga.MaxNonImprovingIter {
         parents := SelectParents(population, len(population)/2, ga.TournamentSize)
         
-        for _, p := range parents {
-            fmt.Println(p.GetCost())
-        }
-        
-        for i := ga.EliteSize; i < len(population); i++ {
+        for i := eliteSize; i < len(population); i++ {
             p1Index := GetRandomInt(0, len(parents)-1)
             p2Index := GetRandomInt(0, len(parents)-1)
             
@@ -469,10 +479,19 @@ func (ga *GAAlg[T]) Improve(population []T) T {
             father := parents[p1Index]
             mother := parents[p2Index]
             
-            child := ga.CrossoverStrategies[0](father, mother)
+            var child T
+            if rand.Float64() <= ga.CrossoverProbability {
+                crossover := ga.CrossoverStrategies[GetRandomInt(0, len(ga.CrossoverStrategies)-1)]
+                child = crossover(father, mother)
+            } else if rand.Float64() <= 0.5 {
+                child = father.Copy()
+            } else {
+                child = mother.Copy()
+            }
             
             if rand.Float64() <= ga.MutationProbability {
-                ga.MutationStrategies[0](&child)
+                strategy := ga.DiversificationStrategies[GetRandomInt(0, len(ga.DiversificationStrategies)-1)]
+                strategy(&child)
             }
             
             population[i] = child
@@ -483,12 +502,16 @@ func (ga *GAAlg[T]) Improve(population []T) T {
         if population[0].GetCost() < best.GetCost() {
             best = population[0]
             nonImprovingIter = 0
+            ga.Improvements++
+            ga.OnImprovement(&best, ga)
+            ga.LogCost(fmt.Sprintf("Improvement %-4d", ga.Improvements), best.GetCost())
         } else {
             nonImprovingIter++
         }
     }
     
-    ga.LogCost("First Solution", best.GetCost())
+    ga.LogCost("Final Solution", best.GetCost())
+    if ga.Verbose { fmt.Println("[GA FINISHED]") }
     
     return best
 }

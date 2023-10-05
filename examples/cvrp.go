@@ -4,6 +4,7 @@ import (
     "math"
     "math/rand"
     "time"
+    "sort"
     //"github.com/davecgh/go-spew/spew"
     "fmt"
     "github.com/nidoro/heuristix"
@@ -38,9 +39,11 @@ type Data struct {
 }
 
 type Route struct {
-    Id    int
-    Order [] int
-    Load  int
+    Id         int
+    Order      [] int
+    Load       int
+    Cost       float64
+    VehicleCap int
 }
 
 type Solution struct {
@@ -50,12 +53,30 @@ type Solution struct {
     NodeRoute [] int
 }
 
-func MakeRoute(n int) *Route {
+func MakeRoute(n int, vehicleCap int) *Route {
     route := new(Route)
     route.Order = make([] int, 1, n+1)
     route.Order[0] = 0
     route.Load = 0
+    route.VehicleCap = vehicleCap
     return route
+}
+
+func CopyRoute(route *Route) *Route {
+    newRoute := MakeRoute(route.VehicleCap, route.VehicleCap)
+    newRoute.Order = make([]int, len(route.Order))
+    copy(newRoute.Order, route.Order)
+    newRoute.Load = route.Load
+    return newRoute
+}
+        
+func Contains[T int](slice []T, item T) bool {
+    for i := range slice {
+        if slice[i] == item {
+            return true
+        }
+    }
+    return false
 }
 
 func Swap [T any] (a *T, b *T) {
@@ -65,8 +86,8 @@ func Swap [T any] (a *T, b *T) {
 func Print(s Solution) {
     fmt.Printf("Cost: %.4f\n", s.Cost)
     
-    for r, route := range s.Routes {
-        fmt.Printf("Route %d: %d", r, route.Order[0])
+    for _, route := range s.Routes {
+        fmt.Printf("Route %d: %d", route.Id, route.Order[0])
         for i := 1; i < len(route.Order); i++ {
             fmt.Printf(" - %d", route.Order[i])
         }
@@ -126,6 +147,23 @@ func GenRandomData(nodeCount int, regionWidth float64, regionHeight float64) Dat
     return d
 }
 
+func RecalculateCost(s *Solution) {
+    d := s.Data
+    
+    s.Cost = 0
+    
+    for r := 0; r < len(s.Routes); r++ {
+        route := s.Routes[r]
+        route.Cost = 0
+        
+        for i := 0; i < len(route.Order)-1; i++ {
+            edgeWeight := d.Edges[route.Order[i]][route.Order[i+1]]
+            s.Cost += edgeWeight
+            route.Cost += edgeWeight
+        }
+    }
+}
+
 func GenRandomSolution(d *Data) Solution {
     var s Solution
     s.Data = d
@@ -133,7 +171,7 @@ func GenRandomSolution(d *Data) Solution {
     s.Cost = 0.0
     
     nextRouteId := 0
-    route := MakeRoute(d.N)
+    route := MakeRoute(d.N, d.VehicleCap)
     route.Id = nextRouteId
     nextRouteId++
     s.Routes = append(s.Routes, route)
@@ -146,7 +184,7 @@ func GenRandomSolution(d *Data) Solution {
             s.NodeRoute = append(s.NodeRoute, route.Id)
         } else {
             route.Order = append(route.Order, 0)
-            route = MakeRoute(d.N)
+            route = MakeRoute(d.N, d.VehicleCap)
             route.Id = nextRouteId
             nextRouteId++
             route.Order = append(route.Order, i)
@@ -157,19 +195,11 @@ func GenRandomSolution(d *Data) Solution {
     }
     
     route.Order = append(route.Order, 0)
+    RecalculateCost(&s)
     
-    for r := 0; r < len(s.Routes); r++ {
-        route := s.Routes[r]
-        
-        // Suffle
-        for i := 1; i < len(route.Order)-1; i++ {
-            j := GetRandomInt(1, len(route.Order)-2)
-            Swap(&route.Order[i], &route.Order[j])
-        }
-        
-        for i := 0; i < len(route.Order)-1; i++ {
-            s.Cost += d.Edges[route.Order[i]][route.Order[i+1]]
-        }
+    // Shuffle
+    for i := 0; i < d.N; i++ {
+        DiversifyBySwaping(&s)
     }
     
     return s
@@ -372,6 +402,61 @@ func DiversifyBySwapingAdjacent(s *Solution) float64 {
     return costDiff
 }
 
+func DiversifyBySwaping(s *Solution) float64 {
+    // Before:
+    // -> a -> b -> c ->
+    // -> d -> e -> f ->
+    // After:
+    // -> a -> e -> c ->
+    // -> d -> b -> f ->
+    data := s.Data
+    
+    for {
+        r1 := GetRandomInt(0, len(s.Routes)-1)
+        r2 := GetRandomInt(0, len(s.Routes)-1)
+        
+        route1 := s.Routes[r1]
+        route2 := s.Routes[r2]
+        
+        i := GetRandomInt(1, len(route1.Order)-2)
+        j := GetRandomInt(1, len(route2.Order)-2)
+        
+        a := route1.Order[i-1]
+        b := route1.Order[i]
+        c := route1.Order[i+1]
+        
+        d := route2.Order[j-1]
+        e := route2.Order[j]
+        f := route2.Order[j+1]
+        
+        if b == e || c == e || a == e {
+            continue
+        }
+        
+        abcCost := data.Edges[a][b] + data.Edges[b][c]
+        defCost := data.Edges[d][e] + data.Edges[e][f]
+        
+        aecCost := data.Edges[a][e] + data.Edges[e][c]
+        dbfCost := data.Edges[d][b] + data.Edges[b][f]
+        
+        newCost := s.Cost - abcCost - defCost + aecCost + dbfCost
+        diff := newCost - s.Cost
+        
+        route1.Order[i] = e
+        route2.Order[j] = b
+        route1.Cost = route1.Cost - abcCost + aecCost
+        route2.Cost = route2.Cost - defCost + dbfCost
+        
+        if (r1 != r2) {
+            route1.Load = route1.Load - data.Nodes[b].Demand + data.Nodes[e].Demand
+            route2.Load = route2.Load - data.Nodes[e].Demand + data.Nodes[b].Demand
+        }
+        s.Cost = newCost
+        
+        return diff
+    }
+}
+
 func (s Solution) Copy() Solution {
     var result Solution
     result.Data = s.Data
@@ -379,7 +464,7 @@ func (s Solution) Copy() Solution {
     copy(result.NodeRoute, s.NodeRoute)
     result.Routes = make([]*Route, len(s.Routes))
     for i, route := range s.Routes {
-        result.Routes[i] = MakeRoute(s.Data.N)
+        result.Routes[i] = MakeRoute(s.Data.N, s.Data.VehicleCap)
         result.Routes[i].Order = make([] int, len(route.Order))
         copy(result.Routes[i].Order, route.Order)
         result.Routes[i].Id = route.Id
@@ -502,30 +587,108 @@ func (s1 Solution) Compare(s2 Solution) bool {
     return false
 }
 
+func GetNodeSuccessor(s Solution, nodeId int) int {
+    for _, route := range s.Routes {
+        for i, nd := range route.Order {
+            if nodeId == nd {
+                return route.Order[i+1]
+            }
+        }
+    }
+    return -1
+}
+
+type ByCapacityUtilization []*Route
+func (a ByCapacityUtilization) Len() int { return len(a) }
+func (a ByCapacityUtilization) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a ByCapacityUtilization) Less(i, j int) bool {
+    iUtil := float64(a[i].Load) / float64(a[i].VehicleCap)
+    jUtil := float64(a[j].Load) / float64(a[j].VehicleCap)
+    
+    if iUtil == jUtil {
+        return a[i].Cost < a[j].Cost
+    } else {
+        return iUtil < jUtil
+    }
+}
+
+func CrossoverBRBAX(father Solution, mother Solution) Solution {
+    var child Solution
+    
+    d := father.Data
+    child.Data = d
+    child.Routes = make([]*Route, 0, len(father.Routes))
+    child.Cost = 0
+    
+    fatherRoutesSorted := make([]*Route, len(father.Routes))
+    copy(fatherRoutesSorted, father.Routes)
+    sort.Sort(ByCapacityUtilization(fatherRoutesSorted))
+    
+    allocated := make([]bool, d.N+1)
+    for i := range allocated {
+        allocated[i] = false
+    }
+    allocated[0] = true
+    nextRouteId := 0
+    
+    for i := 0; i < len(fatherRoutesSorted)/2; i++ {
+        route := fatherRoutesSorted[i]
+        newRoute := CopyRoute(route)
+        newRoute.Id = nextRouteId
+        child.Routes = append(child.Routes, newRoute)
+        child.Cost += newRoute.Cost
+        
+        for j := 1; j < len(newRoute.Order)-1; j++ {
+            nd := newRoute.Order[j]
+            allocated[nd] = true
+        }
+        
+        nextRouteId++
+    }
+    
+    
+    route := MakeRoute(d.N, d.VehicleCap)
+    route.Id = nextRouteId
+    nextRouteId++
+    for _, r := range mother.Routes {
+        for i := 1; i < len(r.Order); i++ {
+            id := r.Order[i]
+            nd := d.Nodes[id]
+            if !allocated[id] {
+                if route.Load + nd.Demand > route.VehicleCap {
+                    route.Order = append(route.Order, 0)
+                    child.Routes = append(child.Routes, route)
+                    route = MakeRoute(d.N, d.VehicleCap)
+                    route.Id = nextRouteId
+                    nextRouteId++
+                }
+                route.Order = append(route.Order, id)
+                route.Load += nd.Demand
+            }
+        }
+    }
+    
+    if route.Load > 0 {
+        route.Order = append(route.Order, 0)
+        child.Routes = append(child.Routes, route)
+    }
+    
+    RecalculateCost(&child)
+    
+    return child
+}
+
 func main() {
     rand.Seed(time.Now().UnixNano())
     
-    d := GenRandomData(40, 100, 100)
-    d.VehicleCap = 20
+    d := GenRandomData(100, 100, 100)
+    d.VehicleCap = 15
     
-    pop0 := make([]Solution, 10)
+    var s0 Solution
     
-    for i := range pop0 {
-        pop0[i] = GenRandomSolution(&d)
-        Print(pop0[i])
-    }
-    
-    ga := hx.GA[Solution]()
-    s := ga.Improve(pop0)
-    
-    fmt.Println("GA Solution:")
-    Print(s)
-    PlotSolution(s, "ga.svg")
-    fmt.Println()
-    
-    return
-    
-    s0 := GenRandomSolution(&d)
+    // Variable Neighborhood Descent
+    //---------------------------------
+    s0 = GenRandomSolution(&d)
     vnd := hx.VND[Solution]()
     vnd.AddImprovingStrategy(ImproveBySwapingAdjacent)
     vnd.AddImprovingStrategyEx(ImproveByReinsertingEx)
@@ -533,6 +696,8 @@ func main() {
     vnd.Improve(&s0, s0.Cost)
     fmt.Println()
     
+    // Simulated Annealing
+    //-----------------------
     saSolution := s0.Copy()
     sa := hx.SA[Solution]()
     sa.AddImprovingStrategyEx(ImproveBy2OptEx)
@@ -540,6 +705,8 @@ func main() {
     sa.Improve(&saSolution)
     fmt.Println()
     
+    // Iterated Local Search
+    //------------------------
     ilsSolution := s0.Copy()
     ils := hx.ILS[Solution]()
     ils.MaxNonImprovingIter = 20
@@ -551,6 +718,8 @@ func main() {
     ils.Improve(&ilsSolution)
     fmt.Println()
     
+    // Tabu Search
+    //---------------
     tsSolution := s0.Copy()
     ts := hx.TS[Solution]()
     ts.MaxNonImprovingIter = 100
@@ -560,6 +729,31 @@ func main() {
     ts.Improve(&tsSolution)
     fmt.Println()
     
+    // Genetic Algorithm
+    //-----------------------
+    populationSize := 500
+    vnd.Verbose = false
+    
+    pop0 := make([]Solution, populationSize)
+    
+    for i := range pop0 {
+        pop0[i] = GenRandomSolution(&d)
+    }
+    
+    for i := 0; i < len(pop0); i++ {
+        vnd.Improve(&pop0[i], pop0[i].Cost)
+    }
+    
+    ga := hx.GA[Solution]()
+    ga.Elitism = 0.05
+    ga.MaxNonImprovingIter = 200
+    ga.AddCrossoverStrategy(CrossoverBRBAX)
+    ga.AddMutationStrategy(DiversifyByReinserting)
+    gaSolution := ga.Improve(pop0)
+    fmt.Println()
+    
+    // Solutions
+    //---------------
     fmt.Println("VND Solution:")
     Print(s0)
     PlotSolution(s0, "vnd.svg")
@@ -578,6 +772,11 @@ func main() {
     fmt.Println("TS Solution:")
     Print(tsSolution)
     PlotSolution(tsSolution, "ts.svg")
+    fmt.Println()
+    
+    fmt.Println("GA Solution:")
+    Print(gaSolution)
+    PlotSolution(gaSolution, "ga.svg")
     fmt.Println()
 }
 

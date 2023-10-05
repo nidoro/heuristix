@@ -12,10 +12,17 @@ to solve a given optimization problem.
 
 Implemented metaheuristics:
 
-- VND - Variable Neighborhood Descent
-- ILS - Iterated Local Search
-- SA - Simulated Annealing
-- TS - Tabu Search
++------------+
+| VND | Variable Neighborhood Descent |
++------------+
+| ILS | Iterated Local Search |
++------------+
+| SA | Simulated Annealing |
++------------+
+| TS | Tabu Search |
++------------+
+| GA | Genetic Algorithm |
++------------+
 
 ## Basic Usage
 
