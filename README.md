@@ -1,7 +1,7 @@
 # hx &mdash; Optimization Heuristix in Go
 
 > **Warning**
-> This is a work-in-progress. Code may be broken. Use it at your own risk.
+> This is a work-in-progress. The code may be broken. Use it at your own risk.
 
 ## Introduction
 
