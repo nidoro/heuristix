@@ -1,7 +1,7 @@
 # heuristix - Optimization Heuristics in Go
 
 > **Warning**
-> This is a work-in-progress. Use it at your own risk.
+> This is a work-in-progress. Code may be broken. Use it at your own risk.
 
 ## Introduction
 
