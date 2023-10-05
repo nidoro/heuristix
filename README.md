@@ -1,7 +1,7 @@
 # hx &mdash; Optimization Heuristix in Go
 
 > **Warning**
-> This is a work-in-progress. The code may be broken. Use it at your own risk.
+> This is a work-in-progress. There are currently no stable versions, and the latest code may be broken. Use it at your own risk.
 
 ## Introduction
 
@@ -22,13 +22,13 @@ Implemented metaheuristics:
 
 See `/examples`
 
-## Importing
-```go
-import "github.com/nidoro/heuristix"
-```
-
 ## Installation
 
 ```shell
 go get github.com/nidoro/heuristix@latest
+```
+
+## Importing
+```go
+import "github.com/nidoro/heuristix"
 ```
