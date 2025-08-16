@@ -1,1 +1,4 @@
 /examples/*.svg
+local/
+build/
+.kate*

@@ -756,27 +756,27 @@ func main() {
     //---------------
     fmt.Println("VND Solution:")
     Print(s0)
-    PlotSolution(s0, "vnd.svg")
+    PlotSolution(s0, "local/vnd.svg")
     fmt.Println()
     
     fmt.Println("SA Solution:")
     Print(saSolution)
-    PlotSolution(saSolution, "sa.svg")
+    PlotSolution(saSolution, "local/sa.svg")
     fmt.Println()
     
     fmt.Println("ILS Solution:")
     Print(ilsSolution)
-    PlotSolution(ilsSolution, "ils.svg")
+    PlotSolution(ilsSolution, "local/ils.svg")
     fmt.Println()
     
     fmt.Println("TS Solution:")
     Print(tsSolution)
-    PlotSolution(tsSolution, "ts.svg")
+    PlotSolution(tsSolution, "local/ts.svg")
     fmt.Println()
     
     fmt.Println("GA Solution:")
     Print(gaSolution)
-    PlotSolution(gaSolution, "ga.svg")
+    PlotSolution(gaSolution, "local/ga.svg")
     fmt.Println()
 }
 
