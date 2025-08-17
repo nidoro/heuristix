@@ -1,3 +1,6 @@
+// TODO: Otimizar checagem de caminhos que "atravessam" material rodante
+// estacionado
+// TODO: Construir ManeuverTree
 package main
 
 import (
@@ -5,7 +8,7 @@ import (
     _ "math/rand"
     _ "time"
     _ "sort"
-    _ "github.com/davecgh/go-spew/spew"
+    "github.com/davecgh/go-spew/spew"
     "fmt"
     _ "github.com/nidoro/heuristix"
     "encoding/json"
@@ -15,19 +18,20 @@ import (
     "gonum.org/v1/plot"
     "gonum.org/v1/plot/plotter"
     "gonum.org/v1/plot/vg"
-    "strconv"
 )
+
+var _ = spew.Dump
 
 type State map[int][]int
 
-type RollingStockAsset struct {
+type RollingStock struct {
     Id          int `json:"id"`
     HorsePower  int `json:"hp"`
 }
 
 type Config struct {
     Edges           [][]string          `json:"edges"`
-    RollingStock    []RollingStockAsset `json:"rolling-stock"`
+    RollingStock    []RollingStock      `json:"rolling-stock"`
     InitialState    map[string][]int    `json:"initial-state"`
     TargetState     map[string][]int    `json:"target-state"`
 }
@@ -37,9 +41,11 @@ type Node struct {
     Side byte
     ParentId string
     ParentIndex int
+    AggregatorId string
+    AggregatorIndex int
     X float64
     Y float64
-    Length float64
+    Length int
 }
 
 type Nodes []Node
@@ -60,24 +66,9 @@ type Graph struct {
 
 type Data struct {
     Graph           Graph
-    RollingStock    []RollingStockAsset
+    RollingStock    []RollingStock
     InitialState    map[int][]int
     TargetState     map[int][]int
-}
-
-type Route struct {
-    Id         int
-    Order      [] int
-    Load       int
-    Cost       float64
-    VehicleCap int
-}
-
-type Solution struct {
-    Graph      *Graph
-    Routes    [] *Route
-    Cost      float64
-    NodeRoute [] int
 }
 
 func GetNodeIndex(nodes []Node, id string) int {
@@ -119,20 +110,20 @@ func CreateGraph(config Config) Graph {
 
         if uParentIndex < 0 {
             uParentIndex = len(g.Nodes)
-            g.Nodes = append(g.Nodes, Node{Id: uParentId, Length: 5})
+            g.Nodes = append(g.Nodes, Node{Id: uParentId, Length: 5, ParentIndex: -1, AggregatorId: uParentId, AggregatorIndex: uParentIndex})
         }
 
         if vParentIndex < 0 {
             vParentIndex = len(g.Nodes)
-            g.Nodes = append(g.Nodes, Node{Id: vParentId, Length: 5})
+            g.Nodes = append(g.Nodes, Node{Id: vParentId, Length: 5, ParentIndex: -1, AggregatorId: vParentId, AggregatorIndex: vParentIndex})
         }
 
         if u == nil {
-            g.Nodes = append(g.Nodes, Node{Id: uId, Side: uSide, ParentId: uParentId, ParentIndex: uParentIndex})
+            g.Nodes = append(g.Nodes, Node{Id: uId, Side: uSide, ParentId: uParentId, ParentIndex: uParentIndex, AggregatorId: uParentId, AggregatorIndex: uParentIndex})
         }
 
         if v == nil {
-            g.Nodes = append(g.Nodes, Node{Id: vId, Side: vSide, ParentId: vParentId, ParentIndex: vParentIndex})
+            g.Nodes = append(g.Nodes, Node{Id: vId, Side: vSide, ParentId: vParentId, ParentIndex: vParentIndex, AggregatorId: vParentId, AggregatorIndex: vParentIndex})
         }
     }
 
@@ -240,13 +231,13 @@ func CreateData(config Config) Data {
     d.TargetState = make(map[int][]int)
 
     for k, v := range config.InitialState {
-        sb, _ := strconv.Atoi(k)
-        d.InitialState[sb] = v
+        sbIndex := GetNodeIndex(d.Graph.Nodes, k)
+        d.InitialState[sbIndex] = v
     }
 
     for k, v := range config.TargetState {
-        sb, _ := strconv.Atoi(k)
-        d.TargetState[sb] = v
+        sbIndex := GetNodeIndex(d.Graph.Nodes, k)
+        d.TargetState[sbIndex] = v
     }
 
     fmt.Println("InitialState", d.InitialState)
@@ -323,6 +314,214 @@ func ShortestPaths(g Graph, sourceId string) map[string][]string {
     return paths
 }
 
+type Path struct {
+    Nodes                   []string
+    MaxCompositionLength    int
+}
+
+func Max(a, b int) int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func Min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func GetAllPaths(g Graph, s State, sourceIndex int, targetIndex int) []Path {
+    if sourceIndex < 0 || targetIndex < 0 {
+        return nil
+    }
+
+    var results []Path
+    var path []int
+    pathMaxCompositionLength := 9999
+    visited := make([]bool, len(g.Nodes))
+
+    var dfs func(u int)
+    dfs = func(u int) {
+        path = append(path, u)
+        visited[u] = true
+
+        uAggIndex := g.Nodes[u].AggregatorIndex
+        if uAggIndex != sourceIndex {
+            uCap := g.Nodes[uAggIndex].Length - len(s[uAggIndex])
+            pathMaxCompositionLength = Min(pathMaxCompositionLength, uCap)
+        }
+
+        if u == targetIndex {
+            // Checar se material rodante é atravessado
+            // TODO: Otimizar - esta checagem pode ser feita antes da construção
+            // completa do caminho.
+            for sbIndex := range s {
+                if len(s[sbIndex]) > 0 {
+                    for _, k := range path {
+                        for _, l := range path {
+                            if k == l {continue}
+                            if g.Nodes[k].AggregatorIndex == sbIndex && g.Nodes[k].AggregatorIndex == g.Nodes[l].AggregatorIndex && g.Nodes[k].Side != 0 && g.Nodes[l].Side != 0 {
+                                pathMaxCompositionLength = 9999
+                                return
+                            }
+                        }
+                    }
+                }
+            }
+
+            pt := Path{MaxCompositionLength: pathMaxCompositionLength}
+            pt.Nodes = make([]string, len(path))
+
+            for i, idx := range path {
+                pt.Nodes[i] = g.Nodes[idx].Id
+            }
+            results = append(results, pt)
+            pathMaxCompositionLength = 9999
+        } else {
+            for v := 0; v < len(g.Nodes); v++ {
+                if g.Edges[u][v] > 0 && !visited[v] {
+                    dfs(v)
+                }
+            }
+        }
+
+        path = path[:len(path)-1]
+        visited[u] = false
+    }
+
+    dfs(sourceIndex)
+    return results
+}
+
+type Maneuver struct {
+    Composition     []int
+    Path            Path
+    Cost            float64
+    EndState        State
+}
+
+type CompositionRange struct {
+    FirstAsset  int
+    LastAsset   int
+}
+
+func GetPossibleManeuvers(d Data, s State) []Maneuver {
+    // Localizar locomotivas (sb e posição na sb)
+    //-------------------------------------------------
+    locoLocations := make(map[int][]int)
+
+    for sbIndex, rollingStock := range s {
+        for pos, asset := range rollingStock {
+            if d.RollingStock[asset].HorsePower > 0 {
+                if locoLocations[sbIndex] == nil {
+                    locoLocations[sbIndex] = make([]int, 0, len(rollingStock))
+                }
+                locoLocations[sbIndex] = append(locoLocations[sbIndex], pos)
+            }
+        }
+    }
+
+    // Para cada sb com locomotiva, construir todos os caminhos possíveis
+    // partindo daquela sb com outras sbs como destino
+    //--------------------------------------------------------------------------
+    paths := make(map[int]map[int][]Path)
+
+    fmt.Println("locoLocations: ", locoLocations)
+
+    for sbIndex, _ := range locoLocations {
+        paths[sbIndex] = make(map[int][]Path)
+
+        for j := range d.Graph.Nodes {
+            iNode := d.Graph.Nodes[j]
+            if j == sbIndex || iNode.Side != 0 {continue}
+            paths[sbIndex][j] = GetAllPaths(d.Graph, s, sbIndex, j)
+        }
+    }
+
+    //spew.Dump(paths)
+
+    // Para cada locomotiva em cada sb, construir todas as composições possíveis
+    //--------------------------------------------------------------------------
+    possibleCompositions := make(map[int][]CompositionRange)
+
+    for sbIndex, locoPositions := range locoLocations {
+        possibleCompositions[sbIndex] = make([]CompositionRange, 0)
+
+        for _, pos := range locoPositions {
+            // Composições que incluem 1o material rodante
+            for p := pos; p < len(s[sbIndex]); p++ {
+                compositionRange := CompositionRange{0, p}
+                possibleCompositions[sbIndex] = append(possibleCompositions[sbIndex], compositionRange)
+            }
+
+            // Composições que incluem o último material rodante
+            for p := pos; p >= 0; p-- {
+                compositionRange := CompositionRange{p, len(s[sbIndex])-1}
+                possibleCompositions[sbIndex] = append(possibleCompositions[sbIndex], compositionRange)
+            }
+        }
+    }
+
+    fmt.Println("possibleCompositions", possibleCompositions)
+
+    // Para cada composição possível em cada sb, construir todas as manobras
+    // possíveis
+    //--------------------------------------------------------------------------
+    maneuvers := make([]Maneuver, 0)
+
+    for sbIndex, compList := range possibleCompositions {
+        for _, compositionRange := range compList {
+            for targetIndex, pathsToTarget := range paths[sbIndex] {
+                for _, path := range pathsToTarget {
+                    compositionAssets := compositionRange.LastAsset - compositionRange.FirstAsset + 1
+                    if compositionAssets > path.MaxCompositionLength {continue}
+
+                    firstNodeId := path.Nodes[1]
+                    firstNode, _ := GetNode(d.Graph.Nodes, firstNodeId)
+                    if firstNode.Side == 'A' {
+                        if compositionRange.FirstAsset > 0 {
+                            continue
+                        }
+                    } else {
+                        if compositionRange.LastAsset < len(s[sbIndex])-1 {
+                            continue
+                        }
+                    }
+
+                    maneuver := Maneuver{}
+                    maneuver.Composition = s[sbIndex][compositionRange.FirstAsset:compositionRange.LastAsset+1]
+                    maneuver.Path = path
+                    maneuver.Cost = float64(len(path.Nodes))
+
+                    maneuver.EndState = CopyState(s)
+
+                    maneuver.EndState[sbIndex] = append(
+                        maneuver.EndState[sbIndex][0:compositionRange.FirstAsset],
+                        maneuver.EndState[sbIndex][compositionRange.LastAsset+1:len(maneuver.EndState[sbIndex])]...)
+
+                    secondLastNodeId := path.Nodes[len(path.Nodes)-2]
+                    secondLastNode, _ := GetNode(d.Graph.Nodes, secondLastNodeId)
+
+                    if secondLastNode.Side == 'A' {
+                        maneuver.EndState[targetIndex] = append(maneuver.Composition, maneuver.EndState[targetIndex]...)
+                    } else {
+                        maneuver.EndState[targetIndex] = append(maneuver.EndState[targetIndex], maneuver.Composition...)
+                    }
+
+                    maneuvers = append(maneuvers, maneuver)
+                }
+            }
+        }
+    }
+
+    spew.Dump(maneuvers)
+
+    return maneuvers
+}
+
 func main() {
     configFile, _ := os.Open("local/config.json")
     defer configFile.Close()
@@ -335,7 +534,9 @@ func main() {
 
     fmt.Println(s0)
 
-    fmt.Println(ShortestPaths(d.Graph, "2"))
+    fmt.Println(d.RollingStock)
+
+    GetPossibleManeuvers(d, s0)
 
     _ = d
     _ = s0
