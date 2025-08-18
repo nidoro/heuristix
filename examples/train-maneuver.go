@@ -572,8 +572,8 @@ func EqualSlices(a []int, b []int) bool {
 func EqualStates(s1 State, s2 State) bool {
     for z := range s1.SBs {
         _, exists := s2.SBs[z]
-        if len(s1.SBs) == 0 {
-            if exists && len(s2.SBs) > 0 {
+        if len(s1.SBs[z]) == 0 {
+            if exists && len(s2.SBs[z]) > 0 {
                 return false
             }
         } else if exists && !EqualSlices(s1.SBs[z], s2.SBs[z]) {
@@ -583,7 +583,10 @@ func EqualStates(s1 State, s2 State) bool {
 
     for z := range s2.SBs {
         if len(s2.SBs[z]) > 0 {
-            return false
+            _, exists := s1.SBs[z]
+            if !exists {
+                return false
+            }
         }
     }
 
@@ -595,14 +598,13 @@ func EqualAssetLocations(s1 State, s2 State) bool {
 }
 
 func RepeatingState(maneuver *Maneuver) bool {
-    parent := maneuver.Parent
-    for parent != nil {
-        if EqualStates(maneuver.EndState, parent.EndState) {
+    anscestor := maneuver.Parent
+    for anscestor != nil {
+        if EqualStates(maneuver.EndState, anscestor.EndState) {
             return true
         }
 
-        maneuver = maneuver.Parent
-        parent = maneuver.Parent
+        anscestor = anscestor.Parent
     }
     return false
 }
@@ -829,24 +831,22 @@ func main() {
     unvisited = append(unvisited, m0.Children...)
 
     var bestLeaf *Maneuver
-    maxNonImprovingIterations := 10_000
-    nonImprovingIter := 0
+    maxIterations := 20_000
+    iter := 0
 
-    for len(unvisited) > 0 && nonImprovingIter <= maxNonImprovingIterations {
-        fmt.Printf("\rIteration: %-8d", nonImprovingIter)
+    for len(unvisited) > 0 && iter <= maxIterations {
+        fmt.Printf("\rIteration: %-8d  | unvisited: %-8d", iter, len(unvisited))
         maneuver := PopManeuverWithLowestTotalCostEstimate(&unvisited)
 
         if EqualAssetLocations(maneuver.EndState, d.TargetState) {
-            if bestLeaf == nil || maneuver.PartialCost < bestLeaf.PartialCost {
-                bestLeaf = maneuver
-                nonImprovingIter = 0
-            }
+            bestLeaf = maneuver
+            break
         }
 
         maneuver.Children = GetPossibleManeuvers(d, maneuver)
         unvisited = append(unvisited, maneuver.Children...)
 
-        nonImprovingIter += 1
+        iter += 1
     }
 
     fmt.Println()
