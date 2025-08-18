@@ -1,6 +1,6 @@
 // TODO: Otimizar checagem de caminhos que "atravessam" material rodante
 // estacionado
-// TODO: Construir ManeuverTree
+// TODO: Construir matriz de custo não-unitária
 package main
 
 import (
@@ -22,7 +22,10 @@ import (
 
 var _ = spew.Dump
 
-type State map[int][]int
+type State struct {
+    SBs             map[int][]int
+    AssetLocation  []int
+}
 
 type RollingStock struct {
     Id          int `json:"id"`
@@ -62,13 +65,15 @@ type Graph struct {
     N          int
     Nodes      Nodes
     Edges      [][]int
+    DistMatrix [][]float64
 }
 
 type Data struct {
     Graph           Graph
     RollingStock    []RollingStock
-    InitialState    map[int][]int
-    TargetState     map[int][]int
+    InitialState    State
+    TargetState     State
+    DistMatrix      [][]float64
 }
 
 func GetNodeIndex(nodes []Node, id string) int {
@@ -215,6 +220,50 @@ func PrintEdges(g Graph) {
     }
 }
 
+func CreateDistMatrix(g *Graph) {
+    n := len(g.Nodes)
+    dist := make([][]float64, n)
+
+    // initialize distances
+    for i := range dist {
+        iNode := g.Nodes[i]
+
+        dist[i] = make([]float64, n)
+        for j := range dist[i] {
+            jNode := g.Nodes[j]
+
+            if i == j || ((iNode.Side == 0 && jNode.AggregatorIndex == i) || jNode.Side == 0 && iNode.AggregatorIndex == j) {
+                dist[i][j] = 0
+            } else if g.Edges[i][j] > 0 {
+                dist[i][j] = 1 // edge cost
+            } else {
+                dist[i][j] = -1 // unreachable
+            }
+        }
+    }
+
+    // Floyd–Warshall relaxation
+    for k := 0; k < n; k++ {
+        for i := 0; i < n; i++ {
+            if dist[i][k] == -1 {
+                continue
+            }
+
+            for j := 0; j < n; j++ {
+                if dist[k][j] == -1 {
+                    continue
+                }
+                newDist := dist[i][k] + dist[k][j]
+                if dist[i][j] == -1 || newDist < dist[i][j] {
+                    dist[i][j] = newDist
+                }
+            }
+        }
+    }
+
+    g.DistMatrix = dist
+}
+
 func CreateData(config Config) Data {
     var d Data
 
@@ -227,21 +276,37 @@ func CreateData(config Config) Data {
         fmt.Println(d.RollingStock[i])
     }
 
-    d.InitialState = make(map[int][]int)
-    d.TargetState = make(map[int][]int)
+    d.InitialState.SBs = make(map[int][]int)
+    d.InitialState.AssetLocation = make([]int, len(d.RollingStock))
+    d.TargetState.SBs = make(map[int][]int)
+    d.TargetState.AssetLocation = make([]int, len(d.RollingStock))
 
-    for k, v := range config.InitialState {
+    for k, assets := range config.InitialState {
         sbIndex := GetNodeIndex(d.Graph.Nodes, k)
-        d.InitialState[sbIndex] = v
+        d.InitialState.SBs[sbIndex] = assets
+
+        for _, assetIndex := range assets {
+            // TODO: Assumimos que o id é igual ao índice na lista RollingStock, mas
+            // isso deve ser mudado no futuro
+            d.InitialState.AssetLocation[assetIndex] = sbIndex
+        }
     }
 
-    for k, v := range config.TargetState {
+    for k, assets := range config.TargetState {
         sbIndex := GetNodeIndex(d.Graph.Nodes, k)
-        d.TargetState[sbIndex] = v
+        d.TargetState.SBs[sbIndex] = assets
+
+        for _, assetIndex := range assets {
+            // TODO: Assumimos que o id é igual ao índice na lista RollingStock, mas
+            // isso deve ser mudado no futuro
+            d.TargetState.AssetLocation[assetIndex] = sbIndex
+        }
     }
 
     fmt.Println("InitialState", d.InitialState)
     fmt.Println("TargetState", d.TargetState)
+
+    CreateDistMatrix(&d.Graph)
 
     return d
 }
@@ -249,12 +314,15 @@ func CreateData(config Config) Data {
 func CopyState(s1 State) State {
     var s2 State
 
-    s2 = make(State)
+    s2.SBs = make(map[int][]int)
 
-    for k, v := range s1 {
-        s2[k] = make([]int, len(v))
-        copy(s2[k], s1[k])
+    for k, v := range s1.SBs {
+        s2.SBs[k] = make([]int, len(v))
+        copy(s2.SBs[k], s1.SBs[k])
     }
+
+    s2.AssetLocation  = make([]int, len(s1.AssetLocation))
+    copy(s2.AssetLocation, s1.AssetLocation)
 
     return s2
 }
@@ -317,6 +385,8 @@ func ShortestPaths(g Graph, sourceId string) map[string][]string {
 type Path struct {
     Nodes                   []string
     MaxCompositionLength    int
+    OrientationChanges      int
+    Cost                    float64
 }
 
 func Max(a, b int) int {
@@ -338,52 +408,60 @@ func GetAllPaths(g Graph, s State, sourceIndex int, targetIndex int) []Path {
         return nil
     }
 
-    var results []Path
+    var paths []Path
     var path []int
-    pathMaxCompositionLength := 9999
     visited := make([]bool, len(g.Nodes))
 
-    var dfs func(u int)
-    dfs = func(u int) {
+    var dfs func(u int, capSoFar int)
+    dfs = func(u int, capSoFar int) {
         path = append(path, u)
         visited[u] = true
 
-        uAggIndex := g.Nodes[u].AggregatorIndex
-        if uAggIndex != sourceIndex {
-            uCap := g.Nodes[uAggIndex].Length - len(s[uAggIndex])
-            pathMaxCompositionLength = Min(pathMaxCompositionLength, uCap)
+        if g.Nodes[u].Side != 0 {
+            agg := g.Nodes[u].AggregatorIndex
+            free := g.Nodes[agg].Length - len(s.SBs[agg])
+            if free < capSoFar { capSoFar = free }
         }
 
         if u == targetIndex {
-            // Checar se material rodante é atravessado
-            // TODO: Otimizar - esta checagem pode ser feita antes da construção
-            // completa do caminho.
-            for sbIndex := range s {
-                if len(s[sbIndex]) > 0 {
-                    for _, k := range path {
-                        for _, l := range path {
-                            if k == l {continue}
-                            if g.Nodes[k].AggregatorIndex == sbIndex && g.Nodes[k].AggregatorIndex == g.Nodes[l].AggregatorIndex && g.Nodes[k].Side != 0 && g.Nodes[l].Side != 0 {
-                                pathMaxCompositionLength = 9999
-                                return
-                            }
-                        }
-                    }
+            pt := Path{MaxCompositionLength: 999}
+            pt.Nodes = make([]string, len(path))
+
+            for pos, nodeIndex := range path {
+                pt.Nodes[pos] = g.Nodes[nodeIndex].Id
+            }
+
+            // Custo
+            //--------------
+            for k := 0; k < len(path)-1; k++ {
+                u := path[k]
+                v := path[k+1]
+                uNode := g.Nodes[u]
+                vNode := g.Nodes[v]
+
+                if (uNode.Side != 0 && uNode.AggregatorIndex == v) || (uNode.Side == 0 && vNode.AggregatorIndex == u) {
+                    // no cost, dummy edge
+                } else {
+                    pt.Cost += 1
                 }
             }
 
-            pt := Path{MaxCompositionLength: pathMaxCompositionLength}
-            pt.Nodes = make([]string, len(path))
-
-            for i, idx := range path {
-                pt.Nodes[i] = g.Nodes[idx].Id
+            // Mudanças de orientação
+            //---------------------------
+            for k := 1; k < len(path)-1; k++ {
+                a := path[k-1]
+                b := path[k]
+                c := path[k+1]
+                if g.Nodes[b].Side != 0 && a != g.Nodes[b].AggregatorIndex && c != g.Nodes[b].AggregatorIndex {
+                    pt.OrientationChanges += 1
+                }
             }
-            results = append(results, pt)
-            pathMaxCompositionLength = 9999
+
+            paths = append(paths, pt)
         } else {
             for v := 0; v < len(g.Nodes); v++ {
                 if g.Edges[u][v] > 0 && !visited[v] {
-                    dfs(v)
+                    dfs(v, capSoFar)
                 }
             }
         }
@@ -392,15 +470,52 @@ func GetAllPaths(g Graph, s State, sourceIndex int, targetIndex int) []Path {
         visited[u] = false
     }
 
-    dfs(sourceIndex)
+    dfs(sourceIndex, 9999)
+
+    results := make([]Path, 0, len(paths))
+
+    for _, path := range paths {
+        skip := false
+
+        for k := 0; k < len(path.Nodes)-2; k++ {
+            kIndex := GetNodeIndex(g.Nodes, path.Nodes[k])
+            lIndex := GetNodeIndex(g.Nodes, path.Nodes[k+2])
+
+            uNode := g.Nodes[kIndex]
+            vNode := g.Nodes[lIndex]
+
+            _, ok := s.SBs[uNode.AggregatorIndex]
+
+            if ok && len(s.SBs[uNode.AggregatorIndex]) > 0 {
+                if uNode.Side != 0 && vNode.Side != 0 && uNode.AggregatorIndex == vNode.AggregatorIndex {
+                    skip = true
+                }
+
+                if uNode.AggregatorIndex != sourceIndex {
+                    path.MaxCompositionLength = Min(path.MaxCompositionLength, g.Nodes[uNode.AggregatorIndex].Length - len(s.SBs[uNode.AggregatorIndex]))
+                }
+            }
+        }
+
+        if !skip {
+            results = append(results, path)
+        }
+    }
+
     return results
 }
 
 type Maneuver struct {
     Composition     []int
     Path            Path
-    Cost            float64
+    ManeuverCost    float64
+    PartialCost     float64
+    TotalCostEstimate float64
     EndState        State
+
+    // Árvore
+    Children        []*Maneuver
+    Parent          *Maneuver
 }
 
 type CompositionRange struct {
@@ -408,12 +523,126 @@ type CompositionRange struct {
     LastAsset   int
 }
 
-func GetPossibleManeuvers(d Data, s State) []Maneuver {
+func GetDistanceToTargetState(d Data, s1 State) float64 {
+    s2 := d.TargetState
+
+    paths := make(map[int]map[int]float64)
+    var ok bool
+
+    for assetIndex := range s2.AssetLocation {
+        if s1.AssetLocation[assetIndex] != s2.AssetLocation[assetIndex] {
+            z1 := s1.AssetLocation[assetIndex]
+            z2 := s2.AssetLocation[assetIndex]
+
+            _, ok = paths[z1]
+            if !ok {
+                paths[z1] = make(map[int]float64)
+            }
+
+            _, ok = paths[z1][z2]
+            if !ok {
+                paths[z1][z2] = d.Graph.DistMatrix[z1][z2]
+            }
+        }
+    }
+
+    result := 0.0
+
+    for z1, _ := range paths {
+        for z2, _ := range paths[z1] {
+            result += 2*paths[z1][z2]
+        }
+    }
+
+    return result
+}
+
+func EqualSlices(a []int, b []int) bool {
+    if len(a) != len(b) {
+        return false
+    }
+    for i := range a {
+        if a[i] != b[i] {
+            return false
+        }
+    }
+    return true
+}
+
+func EqualStates(s1 State, s2 State) bool {
+    for z := range s1.SBs {
+        _, exists := s2.SBs[z]
+        if len(s1.SBs) == 0 {
+            if exists && len(s2.SBs) > 0 {
+                return false
+            }
+        } else if exists && !EqualSlices(s1.SBs[z], s2.SBs[z]) {
+            return false
+        }
+    }
+
+    return true
+}
+
+func EqualAssetLocations(s1 State, s2 State) bool {
+    return EqualSlices(s1.AssetLocation, s2.AssetLocation)
+}
+
+func RepeatingState(maneuver *Maneuver) bool {
+    parent := maneuver.Parent
+    for parent != nil {
+        if EqualStates(maneuver.EndState, parent.EndState) {
+            return true
+        }
+
+        maneuver = maneuver.Parent
+        parent = maneuver.Parent
+    }
+    return false
+}
+
+func AppendReversed(dst []int, src []int) []int {
+    for i := len(src) - 1; i >= 0; i-- {
+        dst = append(dst, src[i])
+    }
+    return dst
+}
+
+func PrependReversed(dst []int, src []int) []int {
+    for i := len(src) - 1; i >= 0; i-- {
+        dst = append(src[i:i+1], dst...)
+    }
+    return dst
+}
+
+func GetManeuverWithLowestTotalCostEstimate(maneuvers []*Maneuver) (*Maneuver, int) {
+    idx := 0
+    result := maneuvers[idx]
+
+    for i, maneuver := range maneuvers {
+        if maneuver.TotalCostEstimate < result.TotalCostEstimate {
+            result = maneuver
+            idx = i
+        }
+    }
+
+    return result, idx
+}
+
+func PopManeuverWithLowestTotalCostEstimate(maneuvers *[]*Maneuver) *Maneuver {
+    result, idx := GetManeuverWithLowestTotalCostEstimate(*maneuvers)
+    *maneuvers = append((*maneuvers)[0:idx], (*maneuvers)[idx+1:]...)
+    return result
+}
+
+func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
+    s := parent.EndState
+
     // Localizar locomotivas (sb e posição na sb)
     //-------------------------------------------------
     locoLocations := make(map[int][]int)
 
-    for sbIndex, rollingStock := range s {
+    for sbIndex, rollingStock := range s.SBs {
         for pos, asset := range rollingStock {
             if d.RollingStock[asset].HorsePower > 0 {
                 if locoLocations[sbIndex] == nil {
@@ -429,8 +658,6 @@ func GetPossibleManeuvers(d Data, s State) []Maneuver {
     //--------------------------------------------------------------------------
     paths := make(map[int]map[int][]Path)
 
-    fmt.Println("locoLocations: ", locoLocations)
-
     for sbIndex, _ := range locoLocations {
         paths[sbIndex] = make(map[int][]Path)
 
@@ -441,8 +668,6 @@ func GetPossibleManeuvers(d Data, s State) []Maneuver {
         }
     }
 
-    //spew.Dump(paths)
-
     // Para cada locomotiva em cada sb, construir todas as composições possíveis
     //--------------------------------------------------------------------------
     possibleCompositions := make(map[int][]CompositionRange)
@@ -452,25 +677,23 @@ func GetPossibleManeuvers(d Data, s State) []Maneuver {
 
         for _, pos := range locoPositions {
             // Composições que incluem 1o material rodante
-            for p := pos; p < len(s[sbIndex]); p++ {
+            for p := pos; p < len(s.SBs[sbIndex]); p++ {
                 compositionRange := CompositionRange{0, p}
                 possibleCompositions[sbIndex] = append(possibleCompositions[sbIndex], compositionRange)
             }
 
             // Composições que incluem o último material rodante
             for p := pos; p >= 0; p-- {
-                compositionRange := CompositionRange{p, len(s[sbIndex])-1}
+                compositionRange := CompositionRange{p, len(s.SBs[sbIndex])-1}
                 possibleCompositions[sbIndex] = append(possibleCompositions[sbIndex], compositionRange)
             }
         }
     }
 
-    fmt.Println("possibleCompositions", possibleCompositions)
-
     // Para cada composição possível em cada sb, construir todas as manobras
     // possíveis
     //--------------------------------------------------------------------------
-    maneuvers := make([]Maneuver, 0)
+    maneuvers := make([]*Maneuver, 0)
 
     for sbIndex, compList := range possibleCompositions {
         for _, compositionRange := range compList {
@@ -479,6 +702,8 @@ func GetPossibleManeuvers(d Data, s State) []Maneuver {
                     compositionAssets := compositionRange.LastAsset - compositionRange.FirstAsset + 1
                     if compositionAssets > path.MaxCompositionLength {continue}
 
+                    startingOrientation := 0
+
                     firstNodeId := path.Nodes[1]
                     firstNode, _ := GetNode(d.Graph.Nodes, firstNodeId)
                     if firstNode.Side == 'A' {
@@ -486,30 +711,57 @@ func GetPossibleManeuvers(d Data, s State) []Maneuver {
                             continue
                         }
                     } else {
-                        if compositionRange.LastAsset < len(s[sbIndex])-1 {
+                        if compositionRange.LastAsset < len(s.SBs[sbIndex])-1 {
                             continue
                         }
+                        startingOrientation = 1
                     }
 
-                    maneuver := Maneuver{}
-                    maneuver.Composition = s[sbIndex][compositionRange.FirstAsset:compositionRange.LastAsset+1]
+                    maneuver := new(Maneuver)
+                    maneuver.Parent = parent
+                    maneuver.Composition = s.SBs[sbIndex][compositionRange.FirstAsset:compositionRange.LastAsset+1]
                     maneuver.Path = path
-                    maneuver.Cost = float64(len(path.Nodes))
+                    maneuver.ManeuverCost = path.Cost
+                    maneuver.PartialCost = parent.PartialCost + maneuver.ManeuverCost
 
                     maneuver.EndState = CopyState(s)
 
-                    maneuver.EndState[sbIndex] = append(
-                        maneuver.EndState[sbIndex][0:compositionRange.FirstAsset],
-                        maneuver.EndState[sbIndex][compositionRange.LastAsset+1:len(maneuver.EndState[sbIndex])]...)
+                    maneuver.EndState.SBs[sbIndex] = append(
+                        maneuver.EndState.SBs[sbIndex][0:compositionRange.FirstAsset],
+                        maneuver.EndState.SBs[sbIndex][compositionRange.LastAsset+1:len(maneuver.EndState.SBs[sbIndex])]...
+                    )
 
                     secondLastNodeId := path.Nodes[len(path.Nodes)-2]
                     secondLastNode, _ := GetNode(d.Graph.Nodes, secondLastNodeId)
 
-                    if secondLastNode.Side == 'A' {
-                        maneuver.EndState[targetIndex] = append(maneuver.Composition, maneuver.EndState[targetIndex]...)
+                    aux := path.OrientationChanges + startingOrientation
+
+                    if aux % 2 == 0 {
+                        if secondLastNode.Side == 'A' {
+                            maneuver.EndState.SBs[targetIndex] = append(maneuver.Composition, maneuver.EndState.SBs[targetIndex]...)
+                        } else {
+                            maneuver.EndState.SBs[targetIndex] = append(maneuver.EndState.SBs[targetIndex], maneuver.Composition...)
+                        }
                     } else {
-                        maneuver.EndState[targetIndex] = append(maneuver.EndState[targetIndex], maneuver.Composition...)
+                        if secondLastNode.Side == 'A' {
+                            maneuver.EndState.SBs[targetIndex] = PrependReversed(maneuver.EndState.SBs[targetIndex], maneuver.Composition)
+                        } else {
+                            maneuver.EndState.SBs[targetIndex] = AppendReversed(maneuver.EndState.SBs[targetIndex], maneuver.Composition)
+                        }
                     }
+
+                    for pos := compositionRange.FirstAsset; pos <= compositionRange.LastAsset; pos++ {
+                        assetIndex := s.SBs[sbIndex][pos]
+                        maneuver.EndState.AssetLocation[assetIndex] = targetIndex
+                    }
+
+                    if RepeatingState(maneuver) {
+                        continue
+                    }
+
+                    // Calcular TotalCostEstimate
+                    //------------------------------
+                    maneuver.TotalCostEstimate = maneuver.PartialCost + GetDistanceToTargetState(d, maneuver.EndState)
 
                     maneuvers = append(maneuvers, maneuver)
                 }
@@ -517,9 +769,41 @@ func GetPossibleManeuvers(d Data, s State) []Maneuver {
         }
     }
 
-    spew.Dump(maneuvers)
-
     return maneuvers
+}
+
+func PrintState(d Data, state State) {
+    g := d.Graph
+    for z, assets := range state.SBs {
+        if len(assets) == 0 {continue}
+        fmt.Printf("  %-3s: ", g.Nodes[z].Id)
+        fmt.Println(assets)
+    }
+}
+
+func PrintManeuver(d Data, maneuver *Maneuver) {
+    fmt.Println("Path              : ", maneuver.Path.Nodes)
+    fmt.Println("OrientationChanges: ", maneuver.Path.OrientationChanges)
+    fmt.Println("Composition       : ", maneuver.Composition)
+    fmt.Println("ManeuverCost      : ", maneuver.ManeuverCost)
+    fmt.Println("PartialCost       : ", maneuver.PartialCost)
+    fmt.Println("TotalCostEstimate : ", maneuver.TotalCostEstimate)
+    fmt.Println("EndState    : ")
+    PrintState(d, maneuver.EndState)
+}
+
+func PrintManeuverSequence(d Data, maneuver *Maneuver) {
+    sequence := make([]*Maneuver, 0)
+    sequence = append(sequence, maneuver)
+    maneuver = maneuver.Parent
+    for maneuver != nil {
+        sequence = append(sequence, maneuver)
+        maneuver = maneuver.Parent
+    }
+
+    for i := len(sequence)-1; i >= 0; i-- {
+        PrintManeuver(d, sequence[i])
+    }
 }
 
 func main() {
@@ -530,16 +814,44 @@ func main() {
     json.NewDecoder(configFile).Decode(&config)
 
     d := CreateData(config)
-    s0 := CopyState(d.InitialState)
 
-    fmt.Println(s0)
+    unvisited := make([]*Maneuver, 0)
 
-    fmt.Println(d.RollingStock)
+    m0 := new(Maneuver)
+    m0.EndState = CopyState(d.InitialState)
+    m0.Children = GetPossibleManeuvers(d, m0)
+    unvisited = append(unvisited, m0.Children...)
 
-    GetPossibleManeuvers(d, s0)
+    var bestLeaf *Maneuver
+    maxNonImprovingIterations := 10_000
+    nonImprovingIter := 0
 
-    _ = d
-    _ = s0
+    for len(unvisited) > 0 && nonImprovingIter <= maxNonImprovingIterations {
+        fmt.Printf("\rIteration: %-8d", nonImprovingIter)
+        maneuver := PopManeuverWithLowestTotalCostEstimate(&unvisited)
+
+        if EqualAssetLocations(maneuver.EndState, d.TargetState) {
+            if bestLeaf == nil || maneuver.PartialCost < bestLeaf.PartialCost {
+                bestLeaf = maneuver
+                nonImprovingIter = 0
+            }
+        }
+
+        maneuver.Children = GetPossibleManeuvers(d, maneuver)
+        unvisited = append(unvisited, maneuver.Children...)
+
+        nonImprovingIter += 1
+    }
+
+    fmt.Println()
+
+    fmt.Println("---------------------------------------------------")
+    fmt.Println(" SOLUTION")
+    fmt.Println("---------------------------------------------------")
+
+    if bestLeaf != nil {
+        PrintManeuverSequence(d, bestLeaf)
+    }
 }
 
 
