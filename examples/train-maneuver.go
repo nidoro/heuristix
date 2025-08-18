@@ -581,6 +581,12 @@ func EqualStates(s1 State, s2 State) bool {
         }
     }
 
+    for z := range s2.SBs {
+        if len(s2.SBs[z]) > 0 {
+            return false
+        }
+    }
+
     return true
 }
 
