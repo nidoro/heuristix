@@ -18,6 +18,7 @@ import (
     "gonum.org/v1/plot"
     "gonum.org/v1/plot/plotter"
     "gonum.org/v1/plot/vg"
+    "container/heap"
 )
 
 var _ = spew.Dump
@@ -115,12 +116,12 @@ func CreateGraph(config Config) Graph {
 
         if uParentIndex < 0 {
             uParentIndex = len(g.Nodes)
-            g.Nodes = append(g.Nodes, Node{Id: uParentId, Length: 5, ParentIndex: -1, AggregatorId: uParentId, AggregatorIndex: uParentIndex})
+            g.Nodes = append(g.Nodes, Node{Id: uParentId, Length: 3, ParentIndex: -1, AggregatorId: uParentId, AggregatorIndex: uParentIndex})
         }
 
         if vParentIndex < 0 {
             vParentIndex = len(g.Nodes)
-            g.Nodes = append(g.Nodes, Node{Id: vParentId, Length: 5, ParentIndex: -1, AggregatorId: vParentId, AggregatorIndex: vParentIndex})
+            g.Nodes = append(g.Nodes, Node{Id: vParentId, Length: 3, ParentIndex: -1, AggregatorId: vParentId, AggregatorIndex: vParentIndex})
         }
 
         if u == nil {
@@ -272,10 +273,6 @@ func CreateData(config Config) Data {
 
     d.RollingStock = config.RollingStock
 
-    for i := range d.RollingStock {
-        fmt.Println(d.RollingStock[i])
-    }
-
     d.InitialState.SBs = make(map[int][]int)
     d.InitialState.AssetLocation = make([]int, len(d.RollingStock))
     d.TargetState.SBs = make(map[int][]int)
@@ -302,9 +299,6 @@ func CreateData(config Config) Data {
             d.TargetState.AssetLocation[assetIndex] = sbIndex
         }
     }
-
-    fmt.Println("InitialState", d.InitialState)
-    fmt.Println("TargetState", d.TargetState)
 
     CreateDistMatrix(&d.Graph)
 
@@ -518,6 +512,24 @@ type Maneuver struct {
     Parent          *Maneuver
 }
 
+type ManeuverHeap []*Maneuver
+
+func (h ManeuverHeap) Len() int           { return len(h) }
+func (h ManeuverHeap) Less(i, j int) bool { return h[i].TotalCostEstimate < h[j].TotalCostEstimate }
+func (h ManeuverHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *ManeuverHeap) Push(x interface{}) {
+    *h = append(*h, x.(*Maneuver))
+}
+
+func (h *ManeuverHeap) Pop() interface{} {
+    old := *h
+    n := len(old)
+    maneuver := old[n-1]
+    *h = old[0 : n-1]
+    return maneuver
+}
+
 type CompositionRange struct {
     FirstAsset  int
     LastAsset   int
@@ -547,10 +559,20 @@ func GetDistanceToTargetState(d Data, s1 State) float64 {
     }
 
     result := 0.0
+    minTrips := 0
+
+    for z, _ := range paths {
+        minTrips += len(paths[z])
+    }
+
+    multiplier := 2.0
+    if minTrips == 1 {
+        multiplier = 1.0
+    }
 
     for z1, _ := range paths {
         for z2, _ := range paths[z1] {
-            result += 2*paths[z1][z2]
+            result += multiplier*paths[z1][z2]
         }
     }
 
@@ -617,11 +639,17 @@ func AppendReversed(dst []int, src []int) []int {
 }
 
 func PrependReversed(dst []int, src []int) []int {
+    result := make([]int, 0, len(dst)+len(src))
+
     for i := len(src) - 1; i >= 0; i-- {
-        dst = append(src[i:i+1], dst...)
+        result = append(result, src[i])
     }
-    return dst
+
+    result = append(result, dst...)
+
+    return result
 }
+
 
 func GetManeuverWithLowestTotalCostEstimate(maneuvers []*Maneuver) (*Maneuver, int) {
     idx := 0
@@ -637,9 +665,10 @@ func GetManeuverWithLowestTotalCostEstimate(maneuvers []*Maneuver) (*Maneuver, i
     return result, idx
 }
 
-func PopManeuverWithLowestTotalCostEstimate(maneuvers *[]*Maneuver) *Maneuver {
-    result, idx := GetManeuverWithLowestTotalCostEstimate(*maneuvers)
-    *maneuvers = append((*maneuvers)[0:idx], (*maneuvers)[idx+1:]...)
+func PopManeuverWithLowestTotalCostEstimate(maneuvers *ManeuverHeap) *Maneuver {
+    result := heap.Pop(maneuvers).(*Maneuver)
+    //result, idx := GetManeuverWithLowestTotalCostEstimate(*maneuvers)
+    //*maneuvers = append((*maneuvers)[0:idx], (*maneuvers)[idx+1:]...)
     return result
 }
 
@@ -690,8 +719,8 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
                 possibleCompositions[sbIndex] = append(possibleCompositions[sbIndex], compositionRange)
             }
 
-            // Composições que incluem o último material rodante
-            for p := pos; p >= 0; p-- {
+            // Composições que incluem o último material rodante (mas não o primeiro, já coletado acima)
+            for p := pos; p >= 1; p-- {
                 compositionRange := CompositionRange{p, len(s.SBs[sbIndex])-1}
                 possibleCompositions[sbIndex] = append(possibleCompositions[sbIndex], compositionRange)
             }
@@ -707,10 +736,8 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
         for _, compositionRange := range compList {
             for targetIndex, pathsToTarget := range paths[sbIndex] {
                 for _, path := range pathsToTarget {
-                    compositionAssets := compositionRange.LastAsset - compositionRange.FirstAsset + 1
-                    if compositionAssets > path.MaxCompositionLength {continue}
-
-                    startingOrientation := 0
+                    compositionSize := compositionRange.LastAsset - compositionRange.FirstAsset + 1
+                    if compositionSize > path.MaxCompositionLength {continue}
 
                     firstNodeId := path.Nodes[1]
                     firstNode, _ := GetNode(d.Graph.Nodes, firstNodeId)
@@ -722,17 +749,22 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
                         if compositionRange.LastAsset < len(s.SBs[sbIndex])-1 {
                             continue
                         }
-                        startingOrientation = 1
                     }
 
                     maneuver := new(Maneuver)
                     maneuver.Parent = parent
-                    maneuver.Composition = s.SBs[sbIndex][compositionRange.FirstAsset:compositionRange.LastAsset+1]
+                    maneuver.Composition = make([]int, compositionSize)
+                    copy(maneuver.Composition, s.SBs[sbIndex][compositionRange.FirstAsset:compositionRange.LastAsset+1])
                     maneuver.Path = path
                     maneuver.ManeuverCost = path.Cost
                     maneuver.PartialCost = parent.PartialCost + maneuver.ManeuverCost
 
                     maneuver.EndState = CopyState(s)
+
+                    // maneuver.EndState.SBs[sbIndex] = append(
+                    //     s.SBs[sbIndex][0:compositionRange.FirstAsset],
+                    //     s.SBs[sbIndex][compositionRange.LastAsset+1:len(s.SBs[sbIndex])]...
+                    // )
 
                     maneuver.EndState.SBs[sbIndex] = append(
                         maneuver.EndState.SBs[sbIndex][0:compositionRange.FirstAsset],
@@ -742,9 +774,13 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
                     secondLastNodeId := path.Nodes[len(path.Nodes)-2]
                     secondLastNode, _ := GetNode(d.Graph.Nodes, secondLastNodeId)
 
-                    aux := path.OrientationChanges + startingOrientation
+                    aux := 0
+                    if firstNode.Side == secondLastNode.Side {
+                        aux = 1
+                    }
+                    finalOrientation := (aux + path.OrientationChanges) % 2
 
-                    if aux % 2 == 0 {
+                    if finalOrientation == 0 {
                         if secondLastNode.Side == 'A' {
                             maneuver.EndState.SBs[targetIndex] = append(maneuver.Composition, maneuver.EndState.SBs[targetIndex]...)
                         } else {
@@ -815,28 +851,53 @@ func PrintManeuverSequence(d Data, maneuver *Maneuver) {
 }
 
 func main() {
-    configFile, _ := os.Open("local/config.json")
+    configFile, _ := os.Open("local/config2.json")
+    //configFile, _ := os.Open("local/config.json")
     defer configFile.Close()
 
     config := Config{}
     json.NewDecoder(configFile).Decode(&config)
 
     d := CreateData(config)
+    node, _ := GetNode(d.Graph.Nodes, "0")
+    node.Length = 10
+    node, _ = GetNode(d.Graph.Nodes, "1")
+    node.Length = 10
+    node, _ = GetNode(d.Graph.Nodes, "2")
+    node.Length = 10
+    node, _ = GetNode(d.Graph.Nodes, "3")
+    node.Length = 10
+    node, _ = GetNode(d.Graph.Nodes, "4")
+    node.Length = 10
+    node, _ = GetNode(d.Graph.Nodes, "5")
+    node.Length = 10
 
-    unvisited := make([]*Maneuver, 0)
+    fmt.Println("InitialState:")
+    PrintState(d, d.InitialState)
+
+    fmt.Println("TargetState:")
+    PrintState(d, d.TargetState)
+
+    //unvisited := make([]*Maneuver, 0)
+    unvisited := &ManeuverHeap{}
+    heap.Init(unvisited)
 
     m0 := new(Maneuver)
     m0.EndState = CopyState(d.InitialState)
     m0.Children = GetPossibleManeuvers(d, m0)
-    unvisited = append(unvisited, m0.Children...)
+
+    for _, child := range m0.Children {
+        heap.Push(unvisited, child)
+    }
+    //unvisited = append(unvisited, m0.Children...)
 
     var bestLeaf *Maneuver
-    maxIterations := 20_000
+    maxIterations := 100_000
     iter := 0
 
-    for len(unvisited) > 0 && iter <= maxIterations {
-        fmt.Printf("\rIteration: %-8d  | unvisited: %-8d", iter, len(unvisited))
-        maneuver := PopManeuverWithLowestTotalCostEstimate(&unvisited)
+    for unvisited.Len() > 0 && iter <= maxIterations {
+        fmt.Printf("\rIteration: %-8d  | unvisited: %-8d", iter, unvisited.Len())
+        maneuver := PopManeuverWithLowestTotalCostEstimate(unvisited)
 
         if EqualAssetLocations(maneuver.EndState, d.TargetState) {
             bestLeaf = maneuver
@@ -844,7 +905,10 @@ func main() {
         }
 
         maneuver.Children = GetPossibleManeuvers(d, maneuver)
-        unvisited = append(unvisited, maneuver.Children...)
+        for _, child := range maneuver.Children {
+            heap.Push(unvisited, child)
+        }
+        //unvisited = append(unvisited, maneuver.Children...)
 
         iter += 1
     }
