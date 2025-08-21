@@ -1,3 +1,5 @@
+// TODO: ler e utilizar "lengths"
+
 // TODO: Otimizar checagem de caminhos que "atravessam" material rodante
 // estacionado
 // TODO: Construir matriz de custo não-unitária
@@ -302,12 +304,20 @@ func CreateData(config Config) Data {
 
     for k := range config.InitialState {
         d.InitialState.Rows[k].RollingStock = config.InitialState[k]["row"]
-        d.InitialState.Rows[k].Positioning = config.InitialState[k]["positioning"]
+        d.InitialState.Rows[k].Positioning = make([]int, len(config.InitialState[k]["positioning"]))
+
+        for p, nodeId := range config.InitialState[k]["positioning"] {
+            d.InitialState.Rows[k].Positioning[p] = GetNodeIndex(d.Graph.Nodes, fmt.Sprintf("%d", nodeId))
+        }
     }
 
     for k := range config.TargetState {
         d.TargetState.Rows[k].RollingStock = config.TargetState[k]["row"]
-        d.TargetState.Rows[k].Positioning = config.TargetState[k]["positioning"]
+        d.TargetState.Rows[k].Positioning = make([]int, len(config.TargetState[k]["positioning"]))
+
+        for p, nodeId := range config.TargetState[k]["positioning"] {
+            d.TargetState.Rows[k].Positioning[p] = GetNodeIndex(d.Graph.Nodes, fmt.Sprintf("%d", nodeId))
+        }
     }
 
     CreateDistMatrix(&d.Graph)
@@ -349,6 +359,17 @@ func CopyState(s1 State) State {
     }
 
     return s2
+}
+
+func CopyRollingStockRow(row RollingStockRow) RollingStockRow {
+    var result RollingStockRow
+
+    result.RollingStock = make([]int, len(row.RollingStock))
+    result.Positioning = make([]int, len(row.Positioning))
+    copy(result.RollingStock, row.RollingStock)
+    copy(result.Positioning, row.Positioning)
+
+    return result
 }
 
 // ShortestPaths runs BFS from a source node and returns shortest paths
@@ -529,6 +550,7 @@ func GetAllPaths(g Graph, sourceIndex int, targetIndex int) []Path {
 
 type Maneuver struct {
     Composition     []int
+    Row             RollingStockRow
     Path            Path
     ManeuverCost    float64
     PartialCost     float64
@@ -607,6 +629,21 @@ func GetDistanceToTargetState(d Data, s1 State) float64 {
     return result
 }
 
+func Contains(slice []int, value int) bool {
+    for _, v := range slice {
+        if v == value {
+            return true
+        }
+    }
+    return false
+}
+
+func Reverse(nums []int) {
+    for i, j := 0, len(nums)-1; i < j; i, j = i+1, j-1 {
+        nums[i], nums[j] = nums[j], nums[i]
+    }
+}
+
 func EqualSlices(a []int, b []int) bool {
     if len(a) != len(b) {
         return false
@@ -619,24 +656,26 @@ func EqualSlices(a []int, b []int) bool {
     return true
 }
 
+func EqualRollingStockRows(r1 RollingStockRow, r2 RollingStockRow) bool {
+    return EqualSlices(r1.RollingStock, r2.RollingStock) && EqualSlices(r1.Positioning, r2.Positioning)
+}
+
 func EqualStates(s1 State, s2 State) bool {
-    for z := range s1.SBs {
-        _, exists := s2.SBs[z]
-        if len(s1.SBs[z]) == 0 {
-            if exists && len(s2.SBs[z]) > 0 {
-                return false
-            }
-        } else if exists && !EqualSlices(s1.SBs[z], s2.SBs[z]) {
-            return false
-        }
+    if len(s1.Rows) != len(s2.Rows) {
+        return false
     }
 
-    for z := range s2.SBs {
-        if len(s2.SBs[z]) > 0 {
-            _, exists := s1.SBs[z]
-            if !exists {
-                return false
+    for _, r1 := range s1.Rows {
+        found := false
+        for _, r2 := range s2.Rows {
+            if EqualRollingStockRows(r1, r2) {
+                found = true
+                break
             }
+        }
+
+        if !found {
+            return false
         }
     }
 
@@ -734,9 +773,11 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
 
     // Para cada fileira móvel, construir todas as composições possíveis
     //--------------------------------------------------------------------------
-    possibleCompositions := make([][]CompositionRange, len(movableRows))
+    possibleCompositions := make([][][]CompositionRange, len(movableRows))
 
     for r, row := range movableRows {
+        possibleCompositions[r] = make([][]CompositionRange, 2)
+
         for pos, assetIndex := range row.RollingStock {
             if d.RollingStock[assetIndex].HorsePower == 0 {continue}
 
@@ -748,13 +789,17 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
                 comps = append(comps, compositionRange)
             }
 
+            possibleCompositions[r][0] = comps
+
+            comps = make([]CompositionRange, 0, 2*len(row.RollingStock))
+
             // Composições que incluem o último material rodante (mas não o primeiro, já coletado acima)
             for p := pos; p >= 1; p-- {
                 compositionRange := CompositionRange{p, len(row.RollingStock)-1}
                 comps = append(comps, compositionRange)
             }
 
-            possibleCompositions[r] = comps
+            possibleCompositions[r][1] = comps
         }
     }
 
@@ -762,82 +807,135 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
     //--------------------------------------------------------------------------
     maneuvers := make([]*Maneuver, 0)
 
-    for sbIndex, compList := range possibleCompositions {
-        for _, compositionRange := range compList {
-            for targetIndex, pathsToTarget := range paths[sbIndex] {
-                for _, path := range pathsToTarget {
-                    compositionSize := compositionRange.LastAsset - compositionRange.FirstAsset + 1
-                    if compositionSize > path.MaxCompositionLength {continue}
+    for movableIndex := range possibleCompositions {
+        row := movableRows[movableIndex]
 
-                    firstNodeId := path.Nodes[1]
-                    firstNode, _ := GetNode(d.Graph.Nodes, firstNodeId)
-                    if firstNode.Side == 'A' {
-                        if compositionRange.FirstAsset > 0 {
+        for direction := 0; direction <= 1; direction++ {
+            fromIndex := row.Positioning[direction*(len(row.Positioning)-1)]
+
+            wrongStart := -1
+            if len(row.Positioning) > 1 {
+                wrongStart = row.Positioning[direction*(len(possibleCompositions[movableIndex])-1) - 2*direction + 1]
+            }
+
+            for _, compositionRange := range possibleCompositions[movableIndex][direction] {
+                composition := row.RollingStock[compositionRange.FirstAsset:compositionRange.LastAsset+1]
+
+                for toIndex := range d.Graph.Nodes {
+                    if fromIndex == toIndex {continue}
+                    if d.Graph.Nodes[toIndex].Side != 0 {continue}
+
+                    for _, path := range d.Paths[fromIndex][toIndex] {
+                        // Checar se caminho "atravessa" material rodante estacionado
+                        //--------------------------------------------------------------
+                        invalidPath := false
+                        var mergedRow *RollingStockRow
+                        mergeDirection := -1
+
+                        for p, _ := range path.Nodes {
+                            for r, _ := range s.Rows {
+                                if row == &s.Rows[r] {continue}
+
+                                for p2, _ := range s.Rows[r].Positioning {
+                                    if p == len(path.Nodes)-1 {
+                                        if p2 == 0 {
+                                            mergedRow = &s.Rows[r]
+                                            mergeDirection = 0
+                                        } else if p2 == len(s.Rows[r].Positioning)-1 {
+                                            mergedRow = &s.Rows[r]
+                                            mergeDirection = 1
+                                        } else {
+                                            continue
+                                        }
+                                    }
+                                    invalidPath = true
+                                    break
+                                }
+
+                                if invalidPath {break}
+                            }
+
+                            if invalidPath {break}
+                        }
+
+                        if invalidPath {continue}
+
+                        // Checar se caminho começa indo para o lado errado
+                        if GetNodeIndex(d.Graph.Nodes, path.Nodes[3]) == wrongStart {continue}
+
+                        // Criar manobra
+                        maneuver := new(Maneuver)
+                        maneuver.Parent = parent
+                        maneuver.Row = CopyRollingStockRow(*row)
+                        maneuver.Row.RollingStock = make([]int, len(composition))
+                        copy(maneuver.Row.RollingStock, composition)
+                        maneuver.Path = path
+                        maneuver.ManeuverCost = path.Length
+                        maneuver.PartialCost = parent.PartialCost + maneuver.ManeuverCost
+
+                        // Estado final resultante da manobra
+                        maneuver.EndState = CopyState(s)
+
+                        // Inserir fileira movida no último nó do caminho e anteriores
+                        if mergedRow == nil {
+                            var newRow RollingStockRow
+                            newRow.RollingStock = make([]int, len(composition))
+                            copy(newRow.RollingStock, composition)
+
+                            remainingCompositionLength := float64(len(composition))
+                            newRow.Positioning = make([]int, 0, len(path.Nodes))
+
+                            for k := len(path.Nodes)-1; k >= 0; k-- {
+                                node, nodeIndex := GetNode(d.Graph.Nodes, path.Nodes[k])
+
+                                newRow.Positioning = append(newRow.Positioning, nodeIndex)
+                                remainingCompositionLength -= node.Length
+                                fmt.Println(remainingCompositionLength)
+                                if remainingCompositionLength <= 0 {break}
+                            }
+
+                            Reverse(newRow.Positioning)
+
+                            maneuver.EndState.Rows = append(maneuver.EndState.Rows, newRow)
+                        } else {
+                            // TODO
+                            _ = mergeDirection
                             continue
                         }
-                    } else {
-                        if compositionRange.LastAsset < len(s.SBs[sbIndex])-1 {
+
+                        // Remover do estado final a fileira movida
+                        f := 0
+                        for f = 0; f < len(s.Rows); f++ {
+                            if EqualRollingStockRows(*row, s.Rows[f]) {
+                                break
+                            }
+                        }
+
+                        fmt.Println(s.Rows)
+                        fmt.Println(maneuver.EndState.Rows)
+                        maneuver.EndState.Rows = maneuver.EndState.Rows[:f]
+                        fmt.Println(maneuver.EndState.Rows)
+                        fmt.Println(f)
+                        fmt.Println(len(s.Rows))
+                        fmt.Println("++", maneuver.EndState.Rows)
+                        maneuver.EndState.Rows = append(maneuver.EndState.Rows, s.Rows[f+1:]...)
+                        fmt.Println("==", maneuver.EndState.Rows)
+
+                        if RepeatingState(maneuver) {
                             continue
                         }
+
+                        // Calcular TotalCostEstimate
+                        //------------------------------
+                        maneuver.TotalCostEstimate = maneuver.PartialCost + GetDistanceToTargetState(d, maneuver.EndState)
+
+                        fmt.Println("--------")
+                        PrintManeuver(d, maneuver)
+                        spew.Dump(maneuver.EndState)
+                        fmt.Println("--------")
+
+                        maneuvers = append(maneuvers, maneuver)
                     }
-
-                    maneuver := new(Maneuver)
-                    maneuver.Parent = parent
-                    maneuver.Composition = make([]int, compositionSize)
-                    copy(maneuver.Composition, s.SBs[sbIndex][compositionRange.FirstAsset:compositionRange.LastAsset+1])
-                    maneuver.Path = path
-                    maneuver.ManeuverCost = path.Cost
-                    maneuver.PartialCost = parent.PartialCost + maneuver.ManeuverCost
-
-                    maneuver.EndState = CopyState(s)
-
-                    // maneuver.EndState.SBs[sbIndex] = append(
-                    //     s.SBs[sbIndex][0:compositionRange.FirstAsset],
-                    //     s.SBs[sbIndex][compositionRange.LastAsset+1:len(s.SBs[sbIndex])]...
-                    // )
-
-                    maneuver.EndState.SBs[sbIndex] = append(
-                        maneuver.EndState.SBs[sbIndex][0:compositionRange.FirstAsset],
-                        maneuver.EndState.SBs[sbIndex][compositionRange.LastAsset+1:len(maneuver.EndState.SBs[sbIndex])]...
-                    )
-
-                    secondLastNodeId := path.Nodes[len(path.Nodes)-2]
-                    secondLastNode, _ := GetNode(d.Graph.Nodes, secondLastNodeId)
-
-                    aux := 0
-                    if firstNode.Side == secondLastNode.Side {
-                        aux = 1
-                    }
-                    finalOrientation := (aux + path.OrientationChanges) % 2
-
-                    if finalOrientation == 0 {
-                        if secondLastNode.Side == 'A' {
-                            maneuver.EndState.SBs[targetIndex] = append(maneuver.Composition, maneuver.EndState.SBs[targetIndex]...)
-                        } else {
-                            maneuver.EndState.SBs[targetIndex] = append(maneuver.EndState.SBs[targetIndex], maneuver.Composition...)
-                        }
-                    } else {
-                        if secondLastNode.Side == 'A' {
-                            maneuver.EndState.SBs[targetIndex] = PrependReversed(maneuver.EndState.SBs[targetIndex], maneuver.Composition)
-                        } else {
-                            maneuver.EndState.SBs[targetIndex] = AppendReversed(maneuver.EndState.SBs[targetIndex], maneuver.Composition)
-                        }
-                    }
-
-                    for pos := compositionRange.FirstAsset; pos <= compositionRange.LastAsset; pos++ {
-                        assetIndex := s.SBs[sbIndex][pos]
-                        maneuver.EndState.AssetLocation[assetIndex] = targetIndex
-                    }
-
-                    if RepeatingState(maneuver) {
-                        continue
-                    }
-
-                    // Calcular TotalCostEstimate
-                    //------------------------------
-                    maneuver.TotalCostEstimate = maneuver.PartialCost + GetDistanceToTargetState(d, maneuver.EndState)
-
-                    maneuvers = append(maneuvers, maneuver)
                 }
             }
         }
@@ -863,7 +961,8 @@ func PrintState(d Data, state State) {
 func PrintManeuver(d Data, maneuver *Maneuver) {
     fmt.Println("Path              : ", maneuver.Path.Nodes)
     fmt.Println("OrientationChanges: ", maneuver.Path.OrientationChanges)
-    fmt.Println("Composition       : ", maneuver.Composition)
+    fmt.Println("Row               : ", maneuver.Row.RollingStock, ":", maneuver.Row.Positioning)
+    //fmt.Println("Composition       : ", maneuver.Composition)
     fmt.Println("ManeuverCost      : ", maneuver.ManeuverCost)
     fmt.Println("PartialCost       : ", maneuver.PartialCost)
     fmt.Println("TotalCostEstimate : ", maneuver.TotalCostEstimate)
@@ -906,6 +1005,12 @@ func main() {
     m0 := new(Maneuver)
     m0.EndState = CopyState(d.InitialState)
     m0.Children = GetPossibleManeuvers(d, m0)
+
+    for _, child := range m0.Children {
+        PrintManeuver(d, child)
+    }
+
+    os.Exit(1)
 
     for _, child := range m0.Children {
         heap.Push(unvisited, child)
