@@ -21,6 +21,8 @@ import (
     "gonum.org/v1/plot/plotter"
     "gonum.org/v1/plot/vg"
     "container/heap"
+    "encoding/binary"
+    "hash/fnv"
 )
 
 var _ = spew.Dump
@@ -34,6 +36,7 @@ type State struct {
     SBs                 map[int][]int
     AssetLocation       []int
     Rows                []RollingStockRow
+    Hash                uint64
 }
 
 type RollingStock struct {
@@ -63,6 +66,31 @@ type Node struct {
     Y float64
     Length float64
 }
+
+func HashState(s State) uint64 {
+    h := fnv.New64a()
+
+    for _, row := range s.Rows {
+        for _, v := range row.RollingStock {
+            // convert int -> byte representation
+            b := make([]byte, 8)
+            binary.LittleEndian.PutUint64(b, uint64(v))
+            h.Write(b)
+        }
+        // separator to avoid collisions between concatenated slices
+        h.Write([]byte{0xff})
+
+        for _, v := range row.Positioning {
+            b := make([]byte, 8)
+            binary.LittleEndian.PutUint64(b, uint64(v))
+            h.Write(b)
+        }
+        h.Write([]byte{0xfe})
+    }
+
+    return h.Sum64()
+}
+
 
 type Nodes []Node
 
@@ -336,6 +364,9 @@ func CreateData(config Config) Data {
         }
     }
 
+    d.InitialState.Hash = HashState(d.InitialState)
+    d.TargetState.Hash = HashState(d.TargetState)
+
     CreateDistMatrix(&d.Graph)
 
     // Todos os caminhos de todos para todos
@@ -373,6 +404,8 @@ func CopyState(s1 State) State {
         copy(s2.Rows[i].RollingStock, s1.Rows[i].RollingStock)
         copy(s2.Rows[i].Positioning , s1.Rows[i].Positioning)
     }
+
+    s2.Hash = s1.Hash
 
     return s2
 }
@@ -581,9 +614,11 @@ type Maneuver struct {
     Row             RollingStockRow
     Path            Path
     ManeuverCost    float64
-    AccumCost float64
+    AccumCost       float64
     TotalCostEstimate float64
     EndState        State
+    // HACK: para debug
+    ExtraInfo       string
 
     // Árvore
     Children        []*Maneuver
@@ -692,6 +727,8 @@ func EqualRollingStockRows(r1 RollingStockRow, r2 RollingStockRow) bool {
 }
 
 func EqualStates(s1 State, s2 State) bool {
+    if s1.Hash != s2.Hash {return false}
+
     if len(s1.Rows) != len(s2.Rows) {
         return false
     }
@@ -771,6 +808,9 @@ func PrependReversed(dst []int, src []int) []int {
     return result
 }
 
+func PrependMany(slice []int, values ...int) []int {
+    return append(values, slice...)
+}
 
 func GetManeuverWithLowestTotalCostEstimate(maneuvers []*Maneuver) (*Maneuver, int) {
     idx := 0
@@ -805,7 +845,7 @@ func GetSideNode(d Data, aggIndex int, side byte) *Node {
 
 func GetOppositeSide(d Data, agg1 int, agg2 int) *Node {
     path := d.Paths[agg1][agg2][0]
-    fmt.Println(agg1, agg2, path)
+    //fmt.Println(agg1, agg2, path)
     wrongSide, _ := GetNode(d.Graph.Nodes, path.Nodes[1])
     side := 'A'
     if wrongSide.Side == 'A' {side = 'B'}
@@ -820,10 +860,32 @@ func GetTotalLength(d Data, nodes []int) float64 {
     return result
 }
 
-func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
-    s := parent.EndState
+func ExtendPath(d Data, path *Path, positioning []int) {
+    // fmt.Println()
+    // fmt.Println(path.Nodes)
+    //
+    // fmt.Print("[")
+    // for _, k := range positioning {
+    //     fmt.Printf(" %s", d.Graph.Nodes[k].Id)
+    // }
+    // fmt.Println(" ]")
 
-    Assert(ValidState(d, s), "Invalid parent!")
+    for _, v := range positioning {
+        u := GetNodeIndex(d.Graph.Nodes, path.Nodes[len(path.Nodes)-1])
+        if u == v {continue}
+
+        extension := d.Paths[u][v][0]
+        for _, k := range extension.Nodes[1:] {
+            path.Nodes = append(path.Nodes, k)
+            kNode, _ := GetNode(d.Graph.Nodes, k)
+            path.Length += kNode.Length
+        }
+    }
+    // fmt.Println(path)
+}
+
+func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuver) []*Maneuver {
+    s := parent.EndState
 
     // Localizar fileiras móveis (fileiras com locomotivas)
     //---------------------------------------------------------
@@ -896,7 +958,6 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
         row := movableRows[movableIndex]
 
         //fmt.Println(row)
-        Assert(len(row.Positioning) <= len(row.RollingStock), "wth")
 
         for direction := 0; direction <= 1; direction++ {
             fromIndex := row.Positioning[direction*(len(row.Positioning)-1)]
@@ -906,7 +967,6 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
 
                 rightStart := GetSideNode(d, row.Positioning[0], SIDES[direction])
 
-                fmt.Println(row.Positioning)
                 if len(row.Positioning) > 1 {
                     //fmt.Println("row.Positioning", row.Positioning)
                     //fmt.Println("direction", direction, direction*(len(possibleCompositions[movableIndex])-1) - 2*direction + 1)
@@ -941,16 +1001,16 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
 
                                 for p2, v := range s.Rows[r].Positioning {
                                     if v != u {continue}
-                                    if len(s.Rows[r].Positioning) == 1 {
-                                        if d.Graph.Nodes[GetNodeIndex(d.Graph.Nodes, path.Nodes[p-1])].Side == 'A' {
-                                            mergedRow = &s.Rows[r]
-                                            mergeDirection = 0
-                                        } else {
-                                            mergedRow = &s.Rows[r]
-                                            mergeDirection = 1
-                                        }
-                                    } else if p == len(path.Nodes)-1 {
-                                        if p2 == 0 {
+                                    if p == len(path.Nodes)-1 {
+                                        if len(s.Rows[r].Positioning) == 1 {
+                                            if d.Graph.Nodes[GetNodeIndex(d.Graph.Nodes, path.Nodes[p-1])].Side == 'A' {
+                                                mergedRow = &s.Rows[r]
+                                                mergeDirection = 0
+                                            } else {
+                                                mergedRow = &s.Rows[r]
+                                                mergeDirection = 1
+                                            }
+                                        } else if p2 == 0 {
                                             mergedRow = &s.Rows[r]
                                             mergeDirection = 0
                                         } else if p2 == len(s.Rows[r].Positioning)-1 {
@@ -987,77 +1047,192 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
                         // Estado final resultante da manobra
                         maneuver.EndState = CopyState(s)
 
+                        //second, _ := GetNode(d.Graph.Nodes, path.Nodes[1])
+                        secondLast, _ := GetNode(d.Graph.Nodes, path.Nodes[len(path.Nodes)-2])
+
                         // Inserir fileira movida no último nó do caminho e anteriores
-                        if mergedRow == nil {
-                            var newRow RollingStockRow
-                            newRow.RollingStock = make([]int, len(composition))
-                            copy(newRow.RollingStock, composition)
+                        destEntrance := secondLast
+                        _ = destEntrance
+                        comp := make([]int, 0, len(composition))
 
-                            remainingCompositionLength := float64(len(composition))
-                            newRow.Positioning = make([]int, 0, len(path.Nodes))
+                        // Colocar material rodante na ordem em que vão chegar no último nó
 
-                            for k := len(path.Nodes)-1; k >= 1; k-- {
-                                node, nodeIndex := GetNode(d.Graph.Nodes, path.Nodes[k])
-                                if node.Side != 0 {continue}
+                        if direction == 0 {
+                            if mergedRow != nil {
+                                endPositioning := make([]int, len(mergedRow.Positioning))
+                                copy(endPositioning, mergedRow.Positioning)
 
-                                newRow.Positioning = append(newRow.Positioning, nodeIndex)
-                                remainingCompositionLength -= node.Length
-                                if remainingCompositionLength <= 0 {break}
-                            }
-
-                            if remainingCompositionLength > 0 {continue}
-
-                            Reverse(newRow.Positioning)
-
-                            maneuver.EndState.Rows = append(maneuver.EndState.Rows, newRow)
-                        } else {
-                            var newRow RollingStockRow
-                            newRow.RollingStock = make([]int, 0, len(composition) + len(mergedRow.RollingStock))
-                            //fmt.Println("mergeDirection", mergeDirection)
-                            if mergeDirection == 0 {
-                                newRow.RollingStock = append(newRow.RollingStock, composition...)
-                                newRow.RollingStock = append(newRow.RollingStock, mergedRow.RollingStock...)
-                            } else {
-                                newRow.RollingStock = append(newRow.RollingStock, mergedRow.RollingStock...)
-                                newRow.RollingStock = append(newRow.RollingStock, composition...)
-                            }
-
-                            availableSpace := GetTotalLength(d, mergedRow.Positioning) - float64(len(mergedRow.RollingStock))
-                            remainingCompositionLength := float64(len(composition)) - availableSpace
-                            newRow.Positioning = make([]int, 0, len(mergedRow.Positioning) + len(path.Nodes))
-                            newRow.Positioning = append(newRow.Positioning, mergedRow.Positioning...)
-
-                            positioningExtension := make([]int, 0, len(path.Nodes))
-
-                            if remainingCompositionLength > 0 {
-                                // Até o penúltimo nó do caminho
-                                for k := len(path.Nodes)-2; k >= 1; k-- {
-                                    node, nodeIndex := GetNode(d.Graph.Nodes, path.Nodes[k])
-                                    if node.Side != 0 {continue}
-
-                                    positioningExtension = append(positioningExtension, nodeIndex)
-                                    remainingCompositionLength -= node.Length
-                                    if remainingCompositionLength <= 0 {break}
+                                if mergeDirection == 0 {
+                                    comp = AppendReversed(comp, mergedRow.RollingStock)
+                                } else if mergeDirection == 1 {
+                                    comp = append(comp, mergedRow.RollingStock...)
+                                    Reverse(endPositioning)
                                 }
+
+                                ExtendPath(d, &path, endPositioning)
                             }
+                            comp = append(comp, composition...)
+                        } else {
+                            comp = append(comp, composition...)
+                            Reverse(comp)
 
-                            if remainingCompositionLength > 0 {continue}
+                            if mergedRow != nil {
+                                endPositioning := make([]int, len(mergedRow.Positioning))
+                                copy(endPositioning, mergedRow.Positioning)
 
-                            //fmt.Println("positioningExtension", positioningExtension)
+                                if mergeDirection == 0 {
+                                    comp = PrependReversed(comp, mergedRow.RollingStock)
+                                } else if mergeDirection == 1 {
+                                    comp = PrependMany(comp, mergedRow.RollingStock...)
+                                    Reverse(endPositioning)
+                                }
 
-                            Reverse(positioningExtension)
-
-                            if mergeDirection == 0 {
-                                newRow.Positioning = append(positioningExtension, newRow.Positioning...)
-                            } else {
-                                newRow.Positioning = append(newRow.Positioning, positioningExtension...)
+                                ExtendPath(d, &path, endPositioning)
                             }
-
-                            //fmt.Println("newRow.RollingStock", newRow.RollingStock)
-                            //fmt.Println("newRow.Positioning", newRow.Positioning)
-
-                            maneuver.EndState.Rows = append(maneuver.EndState.Rows, newRow)
                         }
+
+                        // if mergedRow != nil {
+                        //     if mergeDirection == 0 {
+                        //         if direction == 0 {
+                        //             comp = append(comp, mergedRow.RollingStock...)
+                        //             comp = PrependReversed(comp, composition)
+                        //         } else {
+                        //             comp = append(comp, composition...)
+                        //             comp = append(comp, mergedRow.RollingStock...)
+                        //         }
+                        //         ExtendPath(d, &path, mergedRow.Positioning)
+                        //     } else {
+                        //         if direction == 1 {
+                        //             comp = append(comp, mergedRow.RollingStock...)
+                        //             comp = AppendReversed(comp, composition)
+                        //         } else {
+                        //             comp = append(comp, mergedRow.RollingStock...)
+                        //             comp = append(comp, composition...)
+                        //         }
+                        //         revPositioning := make([]int, len(mergedRow.Positioning))
+                        //         copy(revPositioning, mergedRow.Positioning)
+                        //         Reverse(revPositioning)
+                        //         ExtendPath(d, &path, revPositioning)
+                        //     }
+                        // } else {
+                        //     comp = append(comp, composition...)
+                        // }
+                        //
+                        // if direction == 0 {
+                        //     Reverse(comp)
+                        // }
+
+                        var newRow RollingStockRow
+                        newRow.RollingStock = make([]int, len(comp))
+                        copy(newRow.RollingStock, comp)
+
+                        remainingCompositionLength := float64(len(comp))
+                        newRow.Positioning = make([]int, 0, len(path.Nodes))
+
+                        for k := len(path.Nodes)-1; k >= 1; k-- {
+                            node, nodeIndex := GetNode(d.Graph.Nodes, path.Nodes[k])
+                            if node.Side != 0 {continue}
+
+                            newRow.Positioning = append(newRow.Positioning, nodeIndex)
+                            destEntrance, _ = GetNode(d.Graph.Nodes, path.Nodes[k-1])
+                            remainingCompositionLength -= node.Length
+                            if remainingCompositionLength <= 0 {break}
+                        }
+
+                        if remainingCompositionLength > 0 {continue}
+
+                        if len(newRow.Positioning) == 1 && secondLast.Side == 'A' {
+                            Reverse(newRow.RollingStock)
+                        }
+
+                        maneuver.ExtraInfo += fmt.Sprintf("direction: %d\n", direction)
+                        maneuver.ExtraInfo += fmt.Sprintf("secondLast.Side: %c", secondLast.Side)
+
+                        maneuver.EndState.Rows = append(maneuver.EndState.Rows, newRow)
+
+                        // if mergedRow == nil {
+                        //     var newRow RollingStockRow
+                        //     newRow.RollingStock = make([]int, len(comp))
+                        //     copy(newRow.RollingStock, comp)
+                        //
+                        //     remainingCompositionLength := float64(len(comp))
+                        //     newRow.Positioning = make([]int, 0, len(path.Nodes))
+                        //
+                        //     destEntrance := secondLast
+                        //
+                        //     for k := len(path.Nodes)-1; k >= 1; k-- {
+                        //         node, nodeIndex := GetNode(d.Graph.Nodes, path.Nodes[k])
+                        //         if node.Side != 0 {continue}
+                        //
+                        //         newRow.Positioning = append(newRow.Positioning, nodeIndex)
+                        //         destEntrance, _ = GetNode(d.Graph.Nodes, path.Nodes[k-1])
+                        //         remainingCompositionLength -= node.Length
+                        //         if remainingCompositionLength <= 0 {break}
+                        //     }
+                        //
+                        //     if remainingCompositionLength > 0 {continue}
+                        //
+                        //     Reverse(newRow.Positioning)
+                        //
+                        //     if SIDES[direction] == destEntrance.Side {
+                        //         Reverse(newRow.RollingStock)
+                        //     }
+                        //
+                        //     maneuver.EndState.Rows = append(maneuver.EndState.Rows, newRow)
+                        // } else {
+                        //     var newRow RollingStockRow
+                        //
+                        //     comp := make([]int, len(composition))
+                        //     copy(comp, composition)
+                        //     if len(row.Positioning) == 1 && second.Side == secondLast.Side {
+                        //         Reverse(comp)
+                        //     }
+                        //
+                        //     newRow.RollingStock = make([]int, 0, len(comp) + len(mergedRow.RollingStock))
+                        //     //fmt.Println("mergeDirection", mergeDirection)
+                        //     if mergeDirection == 0 {
+                        //         newRow.RollingStock = append(newRow.RollingStock, comp...)
+                        //         newRow.RollingStock = append(newRow.RollingStock, mergedRow.RollingStock...)
+                        //     } else {
+                        //         newRow.RollingStock = append(newRow.RollingStock, mergedRow.RollingStock...)
+                        //         newRow.RollingStock = append(newRow.RollingStock, comp...)
+                        //     }
+                        //
+                        //     availableSpace := GetTotalLength(d, mergedRow.Positioning) - float64(len(mergedRow.RollingStock))
+                        //     remainingCompositionLength := float64(len(comp)) - availableSpace
+                        //     newRow.Positioning = make([]int, 0, len(mergedRow.Positioning) + len(path.Nodes))
+                        //     newRow.Positioning = append(newRow.Positioning, mergedRow.Positioning...)
+                        //
+                        //     positioningExtension := make([]int, 0, len(path.Nodes))
+                        //
+                        //     if remainingCompositionLength > 0 {
+                        //         // Até o penúltimo nó do caminho
+                        //         for k := len(path.Nodes)-2; k >= 1; k-- {
+                        //             node, nodeIndex := GetNode(d.Graph.Nodes, path.Nodes[k])
+                        //             if node.Side != 0 {continue}
+                        //
+                        //             positioningExtension = append(positioningExtension, nodeIndex)
+                        //             remainingCompositionLength -= node.Length
+                        //             if remainingCompositionLength <= 0 {break}
+                        //         }
+                        //     }
+                        //
+                        //     if remainingCompositionLength > 0 {continue}
+                        //
+                        //     //fmt.Println("positioningExtension", positioningExtension)
+                        //
+                        //     if mergeDirection == 0 {
+                        //         Reverse(positioningExtension)
+                        //         newRow.Positioning = append(positioningExtension, newRow.Positioning...)
+                        //     } else {
+                        //         newRow.Positioning = append(newRow.Positioning, positioningExtension...)
+                        //     }
+                        //
+                        //     //fmt.Println("newRow.RollingStock", newRow.RollingStock)
+                        //     //fmt.Println("newRow.Positioning", newRow.Positioning)
+                        //
+                        //     maneuver.EndState.Rows = append(maneuver.EndState.Rows, newRow)
+                        // }
 
                         // Adicionar fileira não movimentada
                         if len(composition) < len(row.RollingStock) {
@@ -1116,20 +1291,35 @@ func GetPossibleManeuvers(d Data, parent *Maneuver) []*Maneuver {
                             maneuver.EndState.Rows = append(maneuver.EndState.Rows[:f], maneuver.EndState.Rows[f+1:]...)
                         }
 
-                        if RepeatingState(maneuver) {
-                            continue
+                        skip := false
+
+                        maneuver.EndState.Hash = HashState(maneuver.EndState)
+
+                        maybeEqual, _ := visited[maneuver.EndState.Hash]
+
+                        for _, vis := range maybeEqual {
+                            if EqualStates(maneuver.EndState, vis.EndState) {
+                                skip = true
+                                break
+                            }
                         }
+
+                        if skip {continue}
 
                         // Calcular TotalCostEstimate
                         //------------------------------
                         maneuver.TotalCostEstimate = maneuver.AccumCost + GetDistanceToTargetState(d, maneuver.EndState)
 
-                        //fmt.Println("------------------------------")
-                        //fmt.Println("Parent:")
-                        //PrintState(d, s)
-                        //fmt.Println("Maneuver:")
-                        //PrintManeuver(d, maneuver)
-                        Assert(ValidState(d, maneuver.EndState), "Invalid state!")
+                        if !ValidState(d, maneuver.EndState) {
+                            fmt.Println("------------------------------")
+                            fmt.Println("Parent:")
+                            PrintState(d, s)
+                            fmt.Println("Maneuver:")
+                            PrintManeuver(d, maneuver)
+                            fmt.Println("Merge direction", mergeDirection)
+                            fmt.Println("Composition range", compositionRange)
+                            panic("Invalid State!")
+                        }
 
                         maneuvers = append(maneuvers, maneuver)
                     }
@@ -1171,7 +1361,9 @@ func PrintManeuver(d Data, maneuver *Maneuver) {
     fmt.Println("ManeuverCost      : ", maneuver.ManeuverCost)
     fmt.Println("AccumCost         : ", maneuver.AccumCost)
     fmt.Println("TotalCostEstimate : ", maneuver.TotalCostEstimate)
-    fmt.Println("EndState    : ")
+    fmt.Println("ExtraInfo         : ")
+    fmt.Println(maneuver.ExtraInfo)
+    fmt.Println("EndState          : ")
     PrintState(d, maneuver.EndState)
 }
 
@@ -1220,6 +1412,29 @@ func ValidState(d Data, s State) bool {
     for _, row := range s.Rows {
         if len(row.RollingStock) == 0 {return false}
         if len(row.Positioning) == 0 {return false}
+
+        if len(row.Positioning) > 1 {
+            a := row.Positioning[0]
+            b := row.Positioning[len(row.Positioning)-1]
+
+            pathFound := false
+
+            for _, path := range d.Paths[a][b] {
+                pathMainNodes := make([]int, 0, len(path.Nodes))
+                for _, k := range path.Nodes {
+                    u := GetNodeIndex(d.Graph.Nodes, k)
+                    if d.Graph.Nodes[u].Side == 0 {
+                        pathMainNodes = append(pathMainNodes, u)
+                    }
+                }
+                if EqualSlices(pathMainNodes, row.Positioning) {
+                    pathFound = true
+                    break
+                }
+            }
+
+            if !pathFound {return false}
+        }
     }
 
     // HACK: Asserção temporária de que o número de SBs ocupadas não pode
@@ -1227,7 +1442,6 @@ func ValidState(d Data, s State) bool {
     for _, row := range s.Rows {
         if len(row.Positioning) > len(row.RollingStock) {return false}
     }
-
 
     return true
 }
@@ -1247,38 +1461,41 @@ func main() {
     fmt.Println("TargetState:")
     PrintState(d, d.TargetState)
 
+    visited := make(map[uint64][]Maneuver)
+
     unvisited := &ManeuverHeap{}
+    *unvisited = make(ManeuverHeap, 0, 500_000)
     heap.Init(unvisited)
 
     m0 := new(Maneuver)
     m0.EndState = CopyState(d.InitialState)
-    m0.Children = GetPossibleManeuvers(d, m0)
+    m0.Children = GetPossibleManeuvers(d, m0, visited)
 
-    for _, child := range m0.Children {
-        PrintManeuver(d, child)
-    }
+    visited[m0.EndState.Hash] = append(visited[m0.EndState.Hash], *m0)
 
     for _, child := range m0.Children {
         heap.Push(unvisited, child)
     }
 
     var bestLeaf *Maneuver
-    maxIterations := 1_000_000
+    maxIterations := 20_000_000
     iter := 0
 
     for unvisited.Len() > 0 && iter <= maxIterations {
-        fmt.Printf("\rIteration: %-8d  | unvisited: %-8d", iter, unvisited.Len())
         maneuver := PopManeuverWithLowestTotalCostEstimate(unvisited)
+        fmt.Printf("\rIteration: %-8d  | unvisited: %-8d | current maneuver heuristic: %-8.0f", iter, unvisited.Len(), maneuver.AccumCost)
 
         if EqualAssetLocations(maneuver.EndState, d.TargetState) {
             bestLeaf = maneuver
             break
         }
 
-        maneuver.Children = GetPossibleManeuvers(d, maneuver)
+        maneuver.Children = GetPossibleManeuvers(d, maneuver, visited)
         for _, child := range maneuver.Children {
             heap.Push(unvisited, child)
         }
+
+        visited[maneuver.EndState.Hash] = append(visited[maneuver.EndState.Hash], *maneuver)
 
         iter += 1
     }
