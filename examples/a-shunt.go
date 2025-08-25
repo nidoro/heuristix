@@ -1002,6 +1002,7 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
                                 for p2, v := range s.Rows[r].Positioning {
                                     if v != u {continue}
                                     if p == len(path.Nodes)-1 {
+
                                         if len(s.Rows[r].Positioning) == 1 {
                                             if d.Graph.Nodes[GetNodeIndex(d.Graph.Nodes, path.Nodes[p-1])].Side == 'A' {
                                                 mergedRow = &s.Rows[r]
@@ -1011,11 +1012,23 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
                                                 mergeDirection = 1
                                             }
                                         } else if p2 == 0 {
-                                            mergedRow = &s.Rows[r]
-                                            mergeDirection = 0
+                                            freeSide := GetOppositeSide(d, v, s.Rows[r].Positioning[p2+1])
+                                            if path.Nodes[p-1] == freeSide.Id {
+                                                mergedRow = &s.Rows[r]
+                                                mergeDirection = 0
+                                            } else {
+                                                invalidPath = true
+                                            }
                                         } else if p2 == len(s.Rows[r].Positioning)-1 {
-                                            mergedRow = &s.Rows[r]
-                                            mergeDirection = 1
+                                            freeSide := GetOppositeSide(d, v, s.Rows[r].Positioning[p2-1])
+                                            if path.Nodes[p-1] == freeSide.Id {
+                                                mergedRow = &s.Rows[r]
+                                                mergeDirection = 1
+                                            } else {
+                                                invalidPath = true
+                                            }
+                                        } else {
+                                            invalidPath = true
                                         }
                                     } else {
                                         invalidPath = true
@@ -1392,7 +1405,7 @@ func ValidState(d Data, s State) bool {
             }
         }
 
-        if count != 1 {return false}
+        if count != 1 {fmt.Println("A"); return false}
     }
 
     for k := range d.Graph.Nodes {
@@ -1406,7 +1419,7 @@ func ValidState(d Data, s State) bool {
             }
         }
 
-        if count > 1 {return false}
+        if count > 1 {fmt.Println("B"); return false}
     }
 
     for _, row := range s.Rows {
@@ -1433,27 +1446,29 @@ func ValidState(d Data, s State) bool {
                 }
             }
 
-            if !pathFound {return false}
+            if !pathFound {fmt.Println("C"); return false}
         }
     }
 
     // HACK: Asserção temporária de que o número de SBs ocupadas não pode
     // ser maior que o número de materiais rodantes
-    for _, row := range s.Rows {
-        if len(row.Positioning) > len(row.RollingStock) {return false}
-    }
+    // for _, row := range s.Rows {
+    //     if len(row.Positioning) > len(row.RollingStock) {return false}
+    // }
 
     return true
 }
 
 func main() {
-    configFile, _ := os.Open("local/config4.json")
+    configFile, _ := os.Open("local/config5.json")
     defer configFile.Close()
 
     config := Config{}
     json.NewDecoder(configFile).Decode(&config)
 
     d := CreateData(config)
+    Assert(ValidState(d, d.InitialState), "Invalid initial state!")
+    Assert(ValidState(d, d.TargetState), "Invalid target state!")
 
     fmt.Println("InitialState:")
     PrintState(d, d.InitialState)
