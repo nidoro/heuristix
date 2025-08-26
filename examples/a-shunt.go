@@ -656,6 +656,7 @@ func GetDistanceToTargetState(d Data, s1 State) float64 {
 
     result := 0.0
     s2 := d.TargetState
+    minManeuversCount := 0
 
     for r1, row1 := range s1.Rows {
         _ = r1
@@ -678,6 +679,7 @@ func GetDistanceToTargetState(d Data, s1 State) float64 {
                         if a != v {minCost = MinFloat(minCost, d.Paths[a][v][0].Length)}
                         if b != u {minCost = MinFloat(minCost, d.Paths[b][u][0].Length)}
                         if b != v {minCost = MinFloat(minCost, d.Paths[b][v][0].Length)}
+                        minManeuversCount += 1
                     }
 
                     //fmt.Println(r1, r2, minCost)
@@ -690,9 +692,34 @@ func GetDistanceToTargetState(d Data, s1 State) float64 {
         }
     }
 
-    //fmt.Println(result)
+    // Calcular diferença entre estados
+    //--------------------------------------
+    totalDiff := 0
 
-    return result
+    for _, row1 := range s1.Rows {
+        correspondingRowDiff := 99999
+
+        for _, row2 := range s2.Rows {
+            diff := 0
+            for _, assetIndex := range row1.RollingStock {
+                if !Contains(row2.RollingStock, assetIndex) {
+                    diff += 1
+                }
+            }
+
+            if diff < correspondingRowDiff {
+                correspondingRowDiff = diff
+            }
+        }
+
+        totalDiff += correspondingRowDiff
+    }
+
+    if minManeuversCount > 1 {
+        return 2*result + float64(1*totalDiff)
+    } else{
+        return result
+    }
 }
 
 func Contains(slice []int, value int) bool {
@@ -1395,6 +1422,7 @@ func PrintManeuverSequence(d Data, maneuver *Maneuver) {
 }
 
 func ValidState(d Data, s State) bool {
+    return true
     for i := range d.RollingStock {
         count := 0
         for _, row := range s.Rows {
@@ -1460,7 +1488,7 @@ func ValidState(d Data, s State) bool {
 }
 
 func main() {
-    configFile, _ := os.Open("local/config5.json")
+    configFile, _ := os.Open("local/config6.json")
     defer configFile.Close()
 
     config := Config{}
