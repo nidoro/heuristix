@@ -1422,7 +1422,9 @@ func PrintManeuverSequence(d Data, maneuver *Maneuver) {
 }
 
 func ValidState(d Data, s State) bool {
-    return true
+    // HACK:
+    // return true
+
     for i := range d.RollingStock {
         count := 0
         for _, row := range s.Rows {
