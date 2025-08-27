@@ -42,6 +42,7 @@ type State struct {
 type RollingStock struct {
     Id          int `json:"id"`
     HorsePower  int `json:"hp"`
+    Group       int
 }
 
 type Config struct {
@@ -367,6 +368,19 @@ func CreateData(config Config) Data {
     d.InitialState.Hash = HashState(d.InitialState)
     d.TargetState.Hash = HashState(d.TargetState)
 
+    nextLocoGroup := len(d.RollingStock)
+    for r, row := range d.TargetState.Rows {
+        for _, assetIndex := range row.RollingStock {
+            asset := d.RollingStock[assetIndex]
+            if asset.HorsePower == 0 {
+                asset.Group = r
+            } else {
+                asset.Group = nextLocoGroup
+                nextLocoGroup++
+            }
+        }
+    }
+
     CreateDistMatrix(&d.Graph)
 
     // Todos os caminhos de todos para todos
@@ -617,8 +631,11 @@ type Maneuver struct {
     AccumCost       float64
     TotalCostEstimate float64
     Dissimilarity   int
+    Score           float64
+    NotBetterStreak int
     EndState        State
-    // HACK: para debug
+
+    // Para debug
     ExtraInfo       string
 
     // Árvore
@@ -626,17 +643,41 @@ type Maneuver struct {
     Parent          *Maneuver
 }
 
-type ManeuverHeap []*Maneuver
+type ManeuverScoreHeap []*Maneuver
 
-func (h ManeuverHeap) Len() int           { return len(h) }
-func (h ManeuverHeap) Less(i, j int) bool { return h[i].TotalCostEstimate < h[j].TotalCostEstimate }
-func (h ManeuverHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h ManeuverScoreHeap) Len() int           { return len(h) }
+func (h ManeuverScoreHeap) Less(i, j int) bool {
+    if h[i].Dissimilarity == h[j].Dissimilarity {
+        return h[i].TotalCostEstimate < h[j].TotalCostEstimate
+    } else {
+        return h[i].Dissimilarity < h[j].Dissimilarity
+    }
+}
+func (h ManeuverScoreHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
-func (h *ManeuverHeap) Push(x interface{}) {
+func (h *ManeuverScoreHeap) Push(x interface{}) {
     *h = append(*h, x.(*Maneuver))
 }
 
-func (h *ManeuverHeap) Pop() interface{} {
+func (h *ManeuverScoreHeap) Pop() interface{} {
+    old := *h
+    n := len(old)
+    maneuver := old[n-1]
+    *h = old[0 : n-1]
+    return maneuver
+}
+
+type ManeuverTotalCostHeap []*Maneuver
+
+func (h ManeuverTotalCostHeap) Len() int           { return len(h) }
+func (h ManeuverTotalCostHeap) Less(i, j int) bool { return h[i].TotalCostEstimate < h[j].TotalCostEstimate }
+func (h ManeuverTotalCostHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *ManeuverTotalCostHeap) Push(x interface{}) {
+    *h = append(*h, x.(*Maneuver))
+}
+
+func (h *ManeuverTotalCostHeap) Pop() interface{} {
     old := *h
     n := len(old)
     maneuver := old[n-1]
@@ -857,7 +898,7 @@ func GetManeuverWithLowestTotalCostEstimate(maneuvers []*Maneuver) (*Maneuver, i
     return result, idx
 }
 
-func PopManeuverWithLowestTotalCostEstimate(maneuvers *ManeuverHeap) *Maneuver {
+func PopManeuverWithLowestTotalCostEstimate(maneuvers *ManeuverScoreHeap) *Maneuver {
     result := heap.Pop(maneuvers).(*Maneuver)
     //result, idx := GetManeuverWithLowestTotalCostEstimate(*maneuvers)
     //*maneuvers = append((*maneuvers)[0:idx], (*maneuvers)[idx+1:]...)
@@ -874,9 +915,14 @@ func GetSideNode(d Data, aggIndex int, side byte) *Node {
     return nil
 }
 
+func GetAdjacentSide(d Data, agg1 int, agg2 int) *Node {
+    path := d.Paths[agg1][agg2][0]
+    result, _ := GetNode(d.Graph.Nodes, path.Nodes[1])
+    return result
+}
+
 func GetOppositeSide(d Data, agg1 int, agg2 int) *Node {
     path := d.Paths[agg1][agg2][0]
-    //fmt.Println(agg1, agg2, path)
     wrongSide, _ := GetNode(d.Graph.Nodes, path.Nodes[1])
     side := 'A'
     if wrongSide.Side == 'A' {side = 'B'}
@@ -1310,6 +1356,19 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
                                 }
                             }
 
+                            if len(row.Positioning) > 1 && len(newRow.Positioning) == 1 {
+                                var beginingSide *Node
+                                if compositionRange.FirstAsset == 0 {
+                                    beginingSide = GetOppositeSide(d, row.Positioning[0], row.Positioning[1])
+                                } else {
+                                    beginingSide = GetAdjacentSide(d, row.Positioning[len(row.Positioning)-1], row.Positioning[len(row.Positioning)-2])
+                                }
+
+                                if beginingSide.Side == 'B' {
+                                    Reverse(newRow.RollingStock)
+                                }
+                            }
+
                             maneuver.EndState.Rows = append(maneuver.EndState.Rows, newRow)
                         }
 
@@ -1354,33 +1413,15 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
                         //------------------------------
                         maneuver.Dissimilarity = GetDissimilarityToTargetState(d, maneuver.EndState)
                         maneuver.TotalCostEstimate = maneuver.AccumCost + GetDistanceToTargetState(d, maneuver.EndState)
-                        maneuver.TotalCostEstimate = float64(maneuver.Dissimilarity)
+                        maneuver.Score = float64(maneuver.Dissimilarity)
 
-                        child := maneuver
-                        parent := maneuver.Parent
-                        dissimilarityGrowth := 0
-                        MAX_DISSIMILARITY_SUCCESSIVE_GROWTHS := 2
-
-                        for i := 0; i < MAX_DISSIMILARITY_SUCCESSIVE_GROWTHS; i++ {
-                            if parent == nil {break}
-
-                            if child.Dissimilarity >= parent.Dissimilarity {
-                                dissimilarityGrowth += 1
-                            } else {
-                                break
-                            }
-
-                            child = parent
-                            parent = child.Parent
+                        if maneuver.Dissimilarity >= maneuver.Parent.Dissimilarity {
+                            maneuver.NotBetterStreak = maneuver.Parent.NotBetterStreak + 1
                         }
 
-                        if dissimilarityGrowth == MAX_DISSIMILARITY_SUCCESSIVE_GROWTHS {
-                            continue
-                        }
+                        MAX_NOT_BETTER_STREAK := 3
 
-                        if maneuver.Dissimilarity == 0 {
-                            PrintManeuver(d, maneuver)
-                        }
+                        if maneuver.NotBetterStreak >= MAX_NOT_BETTER_STREAK {continue}
 
                         if !ValidState(d, maneuver.EndState) {
                             fmt.Println("------------------------------")
@@ -1429,10 +1470,11 @@ func PrintManeuver(d Data, maneuver *Maneuver) {
     fmt.Printf ("Row               :  ")
     PrintRollingStockRow(d, maneuver.Row)
     fmt.Println("Path              : ", maneuver.Path.Nodes)
-    //fmt.Println("Composition       : ", maneuver.Composition)
     fmt.Println("ManeuverCost      : ", maneuver.ManeuverCost)
     fmt.Println("AccumCost         : ", maneuver.AccumCost)
     fmt.Println("TotalCostEstimate : ", maneuver.TotalCostEstimate)
+    fmt.Println("Dissimilarity     : ", maneuver.Dissimilarity)
+    fmt.Println("NotBetterStreak   : ", maneuver.NotBetterStreak)
     fmt.Println("ExtraInfo         : ")
     fmt.Println(maneuver.ExtraInfo)
     fmt.Println("EndState          : ")
@@ -1540,8 +1582,8 @@ func main() {
 
     visited := make(map[uint64][]Maneuver)
 
-    unvisited := &ManeuverHeap{}
-    *unvisited = make(ManeuverHeap, 0, 500_000)
+    unvisited := &ManeuverScoreHeap{}
+    *unvisited = make(ManeuverScoreHeap, 0, 20_000_000)
     heap.Init(unvisited)
 
     m0 := new(Maneuver)
@@ -1556,22 +1598,41 @@ func main() {
         heap.Push(unvisited, child)
     }
 
-    var bestLeaf *Maneuver
     maxIterations := 20_000_000
+    maxVainIterations := 25_000
+
+    vainIterations := 0
     iter := 0
 
+    partialSolutions := &ManeuverTotalCostHeap{}
+
     for unvisited.Len() > 0 && iter <= maxIterations {
-        maneuver := PopManeuverWithLowestTotalCostEstimate(unvisited)
-        fmt.Printf("\rIteration: %-8d  | unvisited: %-8d | current maneuver heuristic: %-8.0f | Dissimilarity: %-8d", iter, unvisited.Len(), maneuver.AccumCost, maneuver.Dissimilarity)
+        maneuver := heap.Pop(unvisited).(*Maneuver)
+        fmt.Printf("\riteration: %-8d  | vain iterations: %-8d | unvisited: %-8d | total cost estimate: %-8.0f | dissimilarity: %-8d", iter, vainIterations, unvisited.Len(), maneuver.AccumCost, maneuver.Dissimilarity)
 
-        if EqualAssetLocations(maneuver.EndState, d.TargetState) {
-            bestLeaf = maneuver
-            break
-        }
+        partialSolutionsFound := 0
 
+        newBest := false
         maneuver.Children = GetPossibleManeuvers(d, maneuver, visited)
         for _, child := range maneuver.Children {
-            heap.Push(unvisited, child)
+            if maneuver.Dissimilarity == 0 {
+                newBest = (partialSolutions.Len() == 0) || (maneuver.TotalCostEstimate < (*partialSolutions)[0].TotalCostEstimate)
+                heap.Push(partialSolutions, maneuver)
+                partialSolutionsFound += 1
+            } else {
+                heap.Push(unvisited, child)
+            }
+        }
+
+        if partialSolutions.Len() > 0 {
+            if newBest {
+                vainIterations = 0
+            } else {
+                vainIterations += 1
+                if vainIterations >= maxVainIterations {
+                    break
+                }
+            }
         }
 
         visited[maneuver.EndState.Hash] = append(visited[maneuver.EndState.Hash], *maneuver)
@@ -1585,8 +1646,9 @@ func main() {
     fmt.Println(" SOLUTION")
     fmt.Println("---------------------------------------------------")
 
-    if bestLeaf != nil {
-        PrintManeuverSequence(d, bestLeaf)
+    if partialSolutions.Len() > 0 {
+        m := heap.Pop(partialSolutions).(*Maneuver)
+        PrintManeuverSequence(d, m)
     }
 }
 
