@@ -6,7 +6,7 @@
 package main
 
 import (
-    _ "math"
+    "math"
     _ "math/rand"
     _ "time"
     "sort"
@@ -616,6 +616,7 @@ type Maneuver struct {
     ManeuverCost    float64
     AccumCost       float64
     TotalCostEstimate float64
+    Dissimilarity   int
     EndState        State
     // HACK: para debug
     ExtraInfo       string
@@ -692,8 +693,12 @@ func GetDistanceToTargetState(d Data, s1 State) float64 {
         }
     }
 
-    // Calcular diferença entre estados
-    //--------------------------------------
+    return result
+}
+
+func GetDissimilarityToTargetState(d Data, s1 State) int {
+    s2 := d.TargetState
+
     totalDiff := 0
 
     for _, row1 := range s1.Rows {
@@ -702,6 +707,7 @@ func GetDistanceToTargetState(d Data, s1 State) float64 {
         for _, row2 := range s2.Rows {
             diff := 0
             for _, assetIndex := range row1.RollingStock {
+                if d.RollingStock[assetIndex].HorsePower > 0 {continue}
                 if !Contains(row2.RollingStock, assetIndex) {
                     diff += 1
                 }
@@ -715,11 +721,9 @@ func GetDistanceToTargetState(d Data, s1 State) float64 {
         totalDiff += correspondingRowDiff
     }
 
-    if minManeuversCount > 1 {
-        return 2*result + float64(1*totalDiff)
-    } else{
-        return result
-    }
+    totalDiff += int(math.Abs(float64(len(s1.Rows)-len(s2.Rows))))
+
+    return totalDiff
 }
 
 func Contains(slice []int, value int) bool {
@@ -1348,7 +1352,35 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
 
                         // Calcular TotalCostEstimate
                         //------------------------------
+                        maneuver.Dissimilarity = GetDissimilarityToTargetState(d, maneuver.EndState)
                         maneuver.TotalCostEstimate = maneuver.AccumCost + GetDistanceToTargetState(d, maneuver.EndState)
+                        maneuver.TotalCostEstimate = float64(maneuver.Dissimilarity)
+
+                        child := maneuver
+                        parent := maneuver.Parent
+                        dissimilarityGrowth := 0
+                        MAX_DISSIMILARITY_SUCCESSIVE_GROWTHS := 2
+
+                        for i := 0; i < MAX_DISSIMILARITY_SUCCESSIVE_GROWTHS; i++ {
+                            if parent == nil {break}
+
+                            if child.Dissimilarity >= parent.Dissimilarity {
+                                dissimilarityGrowth += 1
+                            } else {
+                                break
+                            }
+
+                            child = parent
+                            parent = child.Parent
+                        }
+
+                        if dissimilarityGrowth == MAX_DISSIMILARITY_SUCCESSIVE_GROWTHS {
+                            continue
+                        }
+
+                        if maneuver.Dissimilarity == 0 {
+                            PrintManeuver(d, maneuver)
+                        }
 
                         if !ValidState(d, maneuver.EndState) {
                             fmt.Println("------------------------------")
@@ -1423,7 +1455,7 @@ func PrintManeuverSequence(d Data, maneuver *Maneuver) {
 
 func ValidState(d Data, s State) bool {
     // HACK:
-    // return true
+    return true
 
     for i := range d.RollingStock {
         count := 0
@@ -1514,6 +1546,8 @@ func main() {
 
     m0 := new(Maneuver)
     m0.EndState = CopyState(d.InitialState)
+    m0.Dissimilarity = GetDissimilarityToTargetState(d, m0.EndState)
+
     m0.Children = GetPossibleManeuvers(d, m0, visited)
 
     visited[m0.EndState.Hash] = append(visited[m0.EndState.Hash], *m0)
@@ -1528,7 +1562,7 @@ func main() {
 
     for unvisited.Len() > 0 && iter <= maxIterations {
         maneuver := PopManeuverWithLowestTotalCostEstimate(unvisited)
-        fmt.Printf("\rIteration: %-8d  | unvisited: %-8d | current maneuver heuristic: %-8.0f", iter, unvisited.Len(), maneuver.AccumCost)
+        fmt.Printf("\rIteration: %-8d  | unvisited: %-8d | current maneuver heuristic: %-8.0f | Dissimilarity: %-8d", iter, unvisited.Len(), maneuver.AccumCost, maneuver.Dissimilarity)
 
         if EqualAssetLocations(maneuver.EndState, d.TargetState) {
             bestLeaf = maneuver
