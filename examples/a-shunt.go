@@ -368,7 +368,7 @@ func CreateData(config Config) Data {
     d.InitialState.Hash = HashState(d.InitialState)
     d.TargetState.Hash = HashState(d.TargetState)
 
-    nextLocoGroup := len(d.RollingStock)
+    nextLocoGroup := len(d.TargetState.Rows)
     for r, row := range d.TargetState.Rows {
         for _, assetIndex := range row.RollingStock {
             asset := &d.RollingStock[assetIndex]
@@ -633,6 +633,7 @@ type Maneuver struct {
     Dissimilarity   int
     Score           float64
     NotBetterStreak int
+    ScoreToBeat     float64
     EndState        State
 
     // Para debug
@@ -647,11 +648,14 @@ type ManeuverScoreHeap []*Maneuver
 
 func (h ManeuverScoreHeap) Len() int           { return len(h) }
 func (h ManeuverScoreHeap) Less(i, j int) bool {
+    // if h[i].TotalCostEstimate == h[j].TotalCostEstimate {
+    //     return h[i].Dissimilarity < h[j].Dissimilarity
+    // }
+    // return h[i].TotalCostEstimate < h[j].TotalCostEstimate
     if h[i].Dissimilarity == h[j].Dissimilarity {
         return h[i].TotalCostEstimate < h[j].TotalCostEstimate
-    } else {
-        return h[i].Dissimilarity < h[j].Dissimilarity
     }
+    return h[i].Dissimilarity < h[j].Dissimilarity
 }
 func (h ManeuverScoreHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
@@ -747,9 +751,12 @@ func GetDissimilarityToTargetState(d Data, s1 State) int {
 
         for _, row2 := range s2.Rows {
             diff := 0
-            for _, assetIndex := range row1.RollingStock {
-                if d.RollingStock[assetIndex].HorsePower > 0 {continue}
-                if !Contains(row2.RollingStock, assetIndex) {
+            for p, assetIndex := range row1.RollingStock {
+                if d.RollingStock[assetIndex].HorsePower > 0 {
+                    if p != 0 && p != len(row1.RollingStock)-1 {
+                        diff += 1
+                    }
+                } else if !Contains(row2.RollingStock, assetIndex) {
                     diff += 1
                 }
             }
@@ -1108,7 +1115,7 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
                                             }
                                         } else if p2 == 0 {
                                             freeSide := GetOppositeSide(d, v, s.Rows[r].Positioning[p2+1])
-                                            if path.Nodes[p-1] == freeSide.Id {
+                                            if freeSide != nil && path.Nodes[p-1] == freeSide.Id {
                                                 mergedRow = &s.Rows[r]
                                                 mergeDirection = 0
                                             } else {
@@ -1116,7 +1123,7 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
                                             }
                                         } else if p2 == len(s.Rows[r].Positioning)-1 {
                                             freeSide := GetOppositeSide(d, v, s.Rows[r].Positioning[p2-1])
-                                            if path.Nodes[p-1] == freeSide.Id {
+                                            if freeSide != nil && path.Nodes[p-1] == freeSide.Id {
                                                 mergedRow = &s.Rows[r]
                                                 mergeDirection = 1
                                             } else {
@@ -1431,13 +1438,15 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
                         //------------------------------
                         maneuver.Dissimilarity = GetDissimilarityToTargetState(d, maneuver.EndState)
                         maneuver.TotalCostEstimate = maneuver.AccumCost + GetDistanceToTargetState(d, maneuver.EndState)
-                        maneuver.Score = float64(maneuver.Dissimilarity)
+                        //maneuver.Score = float64(maneuver.Dissimilarity)
+                        maneuver.ScoreToBeat = float64(maneuver.Dissimilarity)
 
-                        if maneuver.Dissimilarity >= maneuver.Parent.Dissimilarity {
+                        if float64(maneuver.Dissimilarity) >= maneuver.Parent.ScoreToBeat {
                             maneuver.NotBetterStreak = maneuver.Parent.NotBetterStreak + 1
+                            maneuver.ScoreToBeat = maneuver.Parent.ScoreToBeat
                         }
 
-                        MAX_NOT_BETTER_STREAK := 3
+                        MAX_NOT_BETTER_STREAK := 5
 
                         if maneuver.NotBetterStreak >= MAX_NOT_BETTER_STREAK {continue}
 
@@ -1607,6 +1616,7 @@ func main() {
     m0 := new(Maneuver)
     m0.EndState = CopyState(d.InitialState)
     m0.Dissimilarity = GetDissimilarityToTargetState(d, m0.EndState)
+    m0.ScoreToBeat = float64(m0.Dissimilarity)
 
     m0.Children = GetPossibleManeuvers(d, m0, visited)
 
