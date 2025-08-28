@@ -371,7 +371,7 @@ func CreateData(config Config) Data {
     nextLocoGroup := len(d.RollingStock)
     for r, row := range d.TargetState.Rows {
         for _, assetIndex := range row.RollingStock {
-            asset := d.RollingStock[assetIndex]
+            asset := &d.RollingStock[assetIndex]
             if asset.HorsePower == 0 {
                 asset.Group = r
             } else {
@@ -1007,6 +1007,15 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
 
             // Composições que incluem 1o material rodante
             for p := pos; p < len(row.RollingStock); p++ {
+                // Não separar material rodante do mesmo grupo
+                if p+1 < len(row.RollingStock) {
+                    a := d.RollingStock[row.RollingStock[p]]
+                    b := d.RollingStock[row.RollingStock[p+1]]
+                    if a.Group == b.Group {
+                        continue
+                    }
+                }
+
                 compositionRange := CompositionRange{0, p}
                 comps = append(comps, compositionRange)
             }
@@ -1017,6 +1026,15 @@ func GetPossibleManeuvers(d Data, parent *Maneuver, visited map[uint64][]Maneuve
 
             // Composições que incluem o último material rodante
             for p := pos; p >= 0; p-- {
+                // Não separar material rodante do mesmo grupo
+                if p-1 >= 0 {
+                    a := d.RollingStock[row.RollingStock[p]]
+                    b := d.RollingStock[row.RollingStock[p-1]]
+                    if a.Group == b.Group {
+                        continue
+                    }
+                }
+
                 compositionRange := CompositionRange{p, len(row.RollingStock)-1}
                 comps = append(comps, compositionRange)
             }
